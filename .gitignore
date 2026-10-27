@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Capacitor native project is generated in CI (see .github/workflows/android-tv-apk.yml)
+packages/frontend/android/
+
+# Local runtime data
+singpulse-cache/
+cache/
+.env
+.env.*
+!.env.example
+
+# Logs & OS / editor noise
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Claude Code per-user settings
+.claude/settings.local.json

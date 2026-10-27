@@ -1,0 +1,28 @@
+{
+  "name": "@singpulse/backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SingPulse headless server: Fastify 5 + WebSocket state sync + yt-dlp media pipeline.",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.ts",
+    "start": "node src/server.ts",
+    "check": "node --check src/server.ts && node --check src/queueManager.ts && node --check src/ytdlp.ts",
+    "typecheck": "tsgo --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-test-module-mocks \"test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@fastify/cors": "10.1.0",
+    "@fastify/static": "8.3.0",
+    "@fastify/websocket": "11.3.4",
+    "@singpulse/shared": "workspace:*",
+    "fastify": "5.12.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/ws": "8.18.2"
+  }
+}

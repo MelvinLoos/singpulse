@@ -1,0 +1,34 @@
+{
+  "name": "@singpulse/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SingPulse Vue 3 app: Android TV stage receiver (/tv) and guest phone remote (/remote).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsgo --noEmit -p tsconfig.json && vue-tsc --noEmit -p tsconfig.json",
+    "cap:sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "7.6.9",
+    "@capacitor/core": "7.6.9",
+    "@singpulse/shared": "workspace:*",
+    "lucide-vue-next": "1.0.0",
+    "pinia": "3.0.4",
+    "qrcode.vue": "3.11.0",
+    "vue": "3.5.44",
+    "vue-router": "4.6.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "7.6.9",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "24.19.2",
+    "@vitejs/plugin-vue": "6.0.10",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vite": "8.3.5",
+    "vue-tsc": "3.3.13"
+  }
+}
