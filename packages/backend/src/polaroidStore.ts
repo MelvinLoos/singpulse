@@ -56,6 +56,10 @@ export class PolaroidStore {
     return this.items.slice(-count);
   }
 
+  public count(): number {
+    return this.items.length;
+  }
+
   public add(input: NewPolaroid): Promise<PolaroidItem> {
     return this.enqueueWrite(async () => {
       const id = randomUUID();

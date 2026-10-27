@@ -9,7 +9,8 @@ import path from 'node:path';
 import { QueueManager } from './queueManager.ts';
 import { PolaroidStore } from './polaroidStore.ts';
 import type { PolaroidImageExt } from './polaroidStore.ts';
-import { searchYouTubeKaraoke } from './ytdlp.ts';
+import { cacheStats, searchYouTubeKaraoke } from './ytdlp.ts';
+import type { CacheStats } from './ytdlp.ts';
 import type {
   AdminFairQueueRequest,
   AdminReorderRequest,
@@ -18,6 +19,7 @@ import type {
   PlaybackCommand,
   QueueItem,
   ServerStatePayload,
+  StatsPayload,
   SubmitPolaroidRequest,
   VoteSuperlative,
   WsInboundMessage,
@@ -39,6 +41,10 @@ const MAX_BAD_PINS = 10;
 // Ceiling across all clients: the per-client key can be rotated by anyone who can forge cf-connecting-ip
 const MAX_BAD_PINS_GLOBAL = 50;
 const PUBLIC_REMOTE_URL = process.env.PUBLIC_REMOTE_URL || `http://localhost:${PORT}`;
+// Optional key for GET /api/stats (dashboards). Unset = LAN only.
+const STATS_API_KEY = process.env.STATS_API_KEY || '';
+// Dashboards poll every ~10 s; re-listing the cache directory that often is wasted work
+const STATS_CACHE_TTL_MS = 30 * 1000;
 
 const VOTE_SUPERLATIVES: ReadonlySet<string> = new Set<VoteSuperlative>(['GRAMMY_WORTHY', 'PURE_PASSION', 'STAGE_LEGEND', 'RIP_EARS']);
 
@@ -152,6 +158,7 @@ function digest(value: string): Buffer {
 
 let PARTY_TOKEN_DIGEST = digest(PARTY_TOKEN);
 const ADMIN_PIN_DIGEST = digest(ADMIN_PIN);
+const STATS_API_KEY_DIGEST = STATS_API_KEY ? digest(STATS_API_KEY) : null;
 
 function isAuthorized(req: { ip: string; headers: Record<string, unknown>; query: Record<string, unknown> }): boolean {
   if (isTrustedLanRequest(req.ip, req.headers)) return true;
@@ -290,6 +297,43 @@ app.get('/ws', { websocket: true }, (socket, req) => {
 
 // 4. REST API Endpoints
 app.get('/api/health', async () => ({ ok: true }));
+
+function isStatsAuthorized(req: FastifyRequest): boolean {
+  if (!STATS_API_KEY_DIGEST) return isTrustedLanRequest(req.ip, req.headers);
+  const key = req.headers['x-api-key'];
+  return typeof key === 'string' && timingSafeEqual(digest(key), STATS_API_KEY_DIGEST);
+}
+
+let cachedCacheStats: { at: number; stats: CacheStats } | null = null;
+
+function currentCacheStats(): CacheStats {
+  const now = Date.now();
+  if (!cachedCacheStats || now - cachedCacheStats.at > STATS_CACHE_TTL_MS) {
+    cachedCacheStats = { at: now, stats: cacheStats() };
+  }
+  return cachedCacheStats.stats;
+}
+
+// Read-only party metrics for dashboards such as gethomepage/homepage (customapi widget)
+app.get('/api/stats', async (req, reply) => {
+  if (!isStatsAuthorized(req)) return reply.code(401).send({ error: 'Unauthorized' });
+
+  let tv = 0;
+  for (const client of clients.values()) if (client.tv) tv += 1;
+  const cache = currentCacheStats();
+  const stats: StatsPayload = {
+    ...queueManager.getStats(),
+    clients: { total: clients.size, tv, remotes: clients.size - tv },
+    tvConnected: tv > 0,
+    photos: polaroidStore.count(),
+    cache: {
+      ...cache,
+      percent: cache.maxBytes > 0 ? Math.round((cache.bytes / cache.maxBytes) * 1000) / 10 : 0
+    },
+    uptime: Math.round(process.uptime())
+  };
+  return stats;
+});
 
 app.get('/api/search', {
   schema: {

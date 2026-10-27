@@ -6,6 +6,8 @@ import type {
   ServerStatePayload,
   PlaybackCommand,
   PolaroidItem,
+  QueueStats,
+  StatsVoteResult,
   VoteSuperlative,
   VotingSessionState,
   WsOutboundMessage
@@ -17,6 +19,8 @@ const MAX_CONCURRENT_DOWNLOADS = 3;
 const VOTE_REVEAL_MS = 7000;
 const VOTE_TOTAL_MS = 10000;
 const SUPERLATIVES: readonly VoteSuperlative[] = ['GRAMMY_WORTHY', 'PURE_PASSION', 'STAGE_LEGEND', 'RIP_EARS'];
+const STATS_UP_NEXT = 5;
+const STATS_EMPTY = '—';
 
 interface CastVote {
   stars: number;
@@ -38,6 +42,8 @@ export class QueueManager {
   private activeVote: VotingSessionState | null = null;
   private votes = new Map<string, CastVote>();
   private voteTimers: NodeJS.Timeout[] = [];
+  private songsPlayed = 0;
+  private lastVote: StatsVoteResult | null = null;
 
   constructor(
     partyToken: string,
@@ -62,6 +68,37 @@ export class QueueManager {
       fairQueueEnabled: this.fairQueueEnabled,
       activeVote: this.activeVote,
       polaroids: this.getPolaroids()
+    };
+  }
+
+  public getStats(): QueueStats {
+    const playing = this.currentSong;
+    const vote = this.activeVote;
+    let status: QueueStats['status'] = 'idle';
+    if (playing) status = this.isPaused ? 'paused' : 'playing';
+    else if (vote) status = 'voting';
+
+    const count = (s: QueueItem['status']) => this.queue.filter((item) => item.status === s).length;
+    return {
+      status,
+      nowPlaying: {
+        title: playing?.title ?? vote?.songTitle ?? STATS_EMPTY,
+        singer: playing?.singer ?? vote?.singer ?? STATS_EMPTY,
+        duration: playing?.duration ?? 0,
+        thumbnail: playing?.thumbnail ?? ''
+      },
+      nextSinger: this.queue[0]?.singer ?? STATS_EMPTY,
+      upNext: this.queue.slice(0, STATS_UP_NEXT).map(({ title, singer }) => ({ title, singer })),
+      queue: {
+        length: this.queue.length,
+        ready: count('ready'),
+        downloading: count('downloading'),
+        errors: count('error')
+      },
+      singers: new Set(this.queue.map((item) => singerKey(item.singer))).size,
+      songsPlayed: this.songsPlayed,
+      lastVote: this.lastVote,
+      fairQueue: this.fairQueueEnabled
     };
   }
 
@@ -178,6 +215,7 @@ export class QueueManager {
       const song = this.currentSong;
       this.currentSong = null;
       this.isPaused = false;
+      this.songsPlayed += 1;
       this.startVote(song);
     }
   }
@@ -236,7 +274,17 @@ export class QueueManager {
     this.advancePlayback();
   }
 
+  // Every way out of an intermission passes here, so this is where a result is kept
   private clearVote(): void {
+    const vote = this.activeVote;
+    if (vote && vote.totalVotes > 0) {
+      this.lastVote = {
+        title: vote.songTitle,
+        singer: vote.singer,
+        averageStars: vote.averageStars,
+        totalVotes: vote.totalVotes
+      };
+    }
     for (const timer of this.voteTimers) clearTimeout(timer);
     this.voteTimers = [];
     this.votes.clear();

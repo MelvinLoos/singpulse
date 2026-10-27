@@ -35,9 +35,11 @@ describe('PolaroidStore', () => {
     await store.load();
     const item = await store.add({ buffer: jpeg, ext: 'webp', sender: 'Bob' });
 
+    assert.equal(store.count(), 1);
     assert.equal(await store.remove(item.id), true);
     assert.equal(await store.remove(item.id), false);
     assert.deepEqual(store.latest(), []);
+    assert.equal(store.count(), 0);
     assert.deepEqual((await readdir(dir)).filter((f) => f !== 'index.json'), []);
   });
 

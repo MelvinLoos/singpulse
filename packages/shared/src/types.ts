@@ -129,3 +129,39 @@ export interface AdminRotateTokenResponse {
 }
 
 // Guest sockets dropped by a token rotation close with code 4001, reason 'PARTY_TOKEN_ROTATED'.
+
+// --- GET /api/stats: read-only party metrics for dashboards (gethomepage/homepage customapi) ---
+// String fields are never null ('—' when empty) so dashboard widgets render cleanly.
+
+export type PartyStatus = 'playing' | 'paused' | 'voting' | 'idle';
+
+export interface StatsSong {
+  title: string;
+  singer: string;
+}
+
+export interface StatsVoteResult extends StatsSong {
+  averageStars: number;
+  totalVotes: number;
+}
+
+// The part of the stats owned by QueueManager
+export interface QueueStats {
+  status: PartyStatus;
+  nowPlaying: StatsSong & { duration: number; thumbnail: string };
+  nextSinger: string;
+  upNext: StatsSong[];     // first 5 queued songs
+  queue: { length: number; ready: number; downloading: number; errors: number };
+  singers: number;         // distinct singers waiting in the queue
+  songsPlayed: number;     // songs played to the end since the server started
+  lastVote: StatsVoteResult | null;
+  fairQueue: boolean;
+}
+
+export interface StatsPayload extends QueueStats {
+  clients: { total: number; tv: number; remotes: number };
+  tvConnected: boolean;
+  photos: number;
+  cache: { files: number; bytes: number; maxBytes: number; percent: number };
+  uptime: number;          // seconds
+}

@@ -171,16 +171,45 @@ function removeQuietly(fullPath: string): void {
   }
 }
 
+interface CachedFile {
+  fullPath: string;
+  mtimeMs: number;
+  size: number;
+}
+
+function listCachedVideos(): CachedFile[] {
+  return readdirSync(CACHE_DIR)
+    .filter((f) => f.endsWith('.mp4'))
+    .map((f) => {
+      const fullPath = path.join(CACHE_DIR, f);
+      const stats = statSync(fullPath);
+      return { fullPath, mtimeMs: stats.mtimeMs, size: stats.size };
+    });
+}
+
+export interface CacheStats {
+  files: number;
+  bytes: number;
+  maxBytes: number;
+}
+
+export function cacheStats(): CacheStats {
+  let files: CachedFile[] = [];
+  try {
+    files = listCachedVideos();
+  } catch {
+    // Cache directory missing or unreadable: report it as empty
+  }
+  return {
+    files: files.length,
+    bytes: files.reduce((acc, f) => acc + f.size, 0),
+    maxBytes: MAX_CACHE_BYTES
+  };
+}
+
 function evictOldCacheIfNeeded(): void {
   try {
-    const files = readdirSync(CACHE_DIR)
-      .filter((f) => f.endsWith('.mp4'))
-      .map((f) => {
-        const fullPath = path.join(CACHE_DIR, f);
-        const stats = statSync(fullPath);
-        return { fullPath, mtimeMs: stats.mtimeMs, size: stats.size };
-      })
-      .toSorted((a, b) => a.mtimeMs - b.mtimeMs); // Oldest first
+    const files = listCachedVideos().toSorted((a, b) => a.mtimeMs - b.mtimeMs); // Oldest first
 
     let totalSize = files.reduce((acc, f) => acc + f.size, 0);
     for (const file of files) {

@@ -345,3 +345,95 @@ describe('QueueManager crowd vote', () => {
     assert.deepEqual(withWall.getState().polaroids, [photo]);
   });
 });
+
+describe('QueueManager stats', () => {
+  let manager: InstanceType<typeof QueueManager>;
+
+  beforeEach(() => {
+    downloads.clear();
+    manager = new QueueManager('abc123', 'https://sing.example.com', () => {});
+  });
+
+  it('reports an idle party with placeholder strings', () => {
+    const stats = manager.getStats();
+    assert.equal(stats.status, 'idle');
+    assert.deepEqual(stats.nowPlaying, { title: '—', singer: '—', duration: 0, thumbnail: '' });
+    assert.equal(stats.nextSinger, '—');
+    assert.deepEqual(stats.queue, { length: 0, ready: 0, downloading: 0, errors: 0 });
+    assert.equal(stats.songsPlayed, 0);
+    assert.equal(stats.lastVote, null);
+  });
+
+  it('tracks playing, paused and voting states and counts the queue', async () => {
+    manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
+    manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+    manager.enqueue(track('cccccccccc1', 'bob '));
+    downloads.get('aaaaaaaaaa1')?.resolve('/media/aaaaaaaaaa1.mp4');
+    downloads.get('bbbbbbbbbb1')?.resolve('/media/bbbbbbbbbb1.mp4');
+    downloads.get('cccccccccc1')?.reject(new Error('boom'));
+    await flush();
+
+    let stats = manager.getStats();
+    assert.equal(stats.status, 'playing');
+    assert.equal(stats.nowPlaying.title, 'Track aaaaaaaaaa1');
+    assert.equal(stats.nowPlaying.singer, 'Alice');
+    assert.equal(stats.nextSinger, 'Bob');
+    assert.deepEqual(stats.queue, { length: 2, ready: 1, downloading: 0, errors: 1 });
+    assert.equal(stats.singers, 1); // 'Bob' and 'bob ' are the same singer
+    assert.deepEqual(stats.upNext.map((s) => s.singer), ['Bob', 'bob ']);
+
+    manager.sendCommand({ action: 'toggle_pause' });
+    assert.equal(manager.getStats().status, 'paused');
+
+    const song = manager.getState().currentSong;
+    assert.ok(song);
+    manager.handleSongEnded(song.id);
+    stats = manager.getStats();
+    assert.equal(stats.status, 'voting');
+    assert.equal(stats.nowPlaying.singer, 'Alice'); // the song being voted on
+    assert.equal(stats.songsPlayed, 1);
+  });
+
+  it('counts only songs that played to the end and keeps the last vote result', async () => {
+    manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
+    manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+    manager.enqueue(track('cccccccccc1', 'Cleo'));
+    for (const id of ['aaaaaaaaaa1', 'bbbbbbbbbb1', 'cccccccccc1']) downloads.get(id)?.resolve(`/media/${id}.mp4`);
+    await flush();
+
+    const alice = manager.getState().currentSong;
+    assert.ok(alice);
+    manager.handleSongEnded(alice.id);
+    manager.submitVote('voter-0001', alice.id, 5);
+    manager.submitVote('voter-0002', alice.id, 4);
+    manager.skipVote();
+
+    // Bob gets skipped by the host: no vote, not counted as played
+    manager.skipCurrent();
+
+    const stats = manager.getStats();
+    assert.equal(stats.songsPlayed, 1);
+    assert.deepEqual(stats.lastVote, { title: 'Track aaaaaaaaaa1', singer: 'Alice', averageStars: 4.5, totalVotes: 2 });
+    assert.equal(stats.nowPlaying.singer, 'Cleo');
+  });
+
+  it('does not replace the last result with a vote nobody joined', async () => {
+    manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
+    manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+    for (const id of ['aaaaaaaaaa1', 'bbbbbbbbbb1']) downloads.get(id)?.resolve(`/media/${id}.mp4`);
+    await flush();
+
+    const alice = manager.getState().currentSong;
+    assert.ok(alice);
+    manager.handleSongEnded(alice.id);
+    manager.submitVote('voter-0001', alice.id, 3);
+    manager.skipVote();
+    const bob = manager.getState().currentSong;
+    assert.ok(bob);
+    manager.handleSongEnded(bob.id);
+    manager.skipVote();
+
+    assert.equal(manager.getStats().lastVote?.singer, 'Alice');
+    assert.equal(manager.getStats().songsPlayed, 2);
+  });
+});

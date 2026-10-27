@@ -13,10 +13,34 @@ services:
       - ADMIN_PIN=${ADMIN_PIN:-1234}
       - PUBLIC_REMOTE_URL=${PUBLIC_REMOTE_URL:-https://sing.yourdomain.com}
       - MAX_CACHE_GB=${MAX_CACHE_GB:-25}
+      # Key for GET /api/stats (homepage widget). Empty = stats readable from the LAN only
+      - STATS_API_KEY=${STATS_API_KEY:-}
     volumes:
       - ./singpulse-cache:/app/cache
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
+      # gethomepage/homepage auto-discovery (ignored when homepage is not running).
+      # The widget URL assumes homepage shares a Docker network with this container;
+      # otherwise point it at http://<server-lan-ip>:3000/api/stats.
+      - "homepage.group=Media"
+      - "homepage.name=SingPulse"
+      - "homepage.icon=${PUBLIC_REMOTE_URL:-https://sing.yourdomain.com}/favicon.svg"
+      - "homepage.href=${PUBLIC_REMOTE_URL:-https://sing.yourdomain.com}"
+      - "homepage.description=Karaoke party"
+      - "homepage.siteMonitor=http://singpulse:3000/api/health"
+      - "homepage.widget.type=customapi"
+      - "homepage.widget.url=http://singpulse:3000/api/stats"
+      - "homepage.widget.headers.X-API-Key=${STATS_API_KEY:-}"
+      - "homepage.widget.mappings[0].label=Now playing"
+      - "homepage.widget.mappings[0].field=nowPlaying.title"
+      - "homepage.widget.mappings[1].label=Singer"
+      - "homepage.widget.mappings[1].field=nowPlaying.singer"
+      - "homepage.widget.mappings[2].label=Queue"
+      - "homepage.widget.mappings[2].field=queue.length"
+      - "homepage.widget.mappings[2].format=number"
+      - "homepage.widget.mappings[3].label=Guests"
+      - "homepage.widget.mappings[3].field=clients.remotes"
+      - "homepage.widget.mappings[3].format=number"
 
   # Automatically updates singpulse when CI pushes a new image to GHCR
   watchtower:
