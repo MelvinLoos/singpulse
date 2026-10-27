@@ -1,0 +1,19 @@
+# Keep the build context small and free of local state
+**/node_modules
+**/dist
+**/*.log
+.git
+.github
+.claude
+.playwright-mcp
+.vscode
+.idea
+.env
+.env.*
+singpulse-cache
+cache
+packages/frontend/android
+packages/backend/test
+*.md
+Dockerfile
+docker-compose.yml

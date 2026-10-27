@@ -1,0 +1,28 @@
+services:
+  singpulse:
+    image: ghcr.io/${GITHUB_REPOSITORY:-owner/singpulse}:latest
+    container_name: singpulse
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - PARTY_TOKEN=${PARTY_TOKEN:-pulse26}
+      - PUBLIC_REMOTE_URL=${PUBLIC_REMOTE_URL:-https://sing.yourdomain.com}
+      - MAX_CACHE_GB=${MAX_CACHE_GB:-25}
+    volumes:
+      - ./singpulse-cache:/app/cache
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # Automatically updates singpulse when CI pushes a new image to GHCR
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    environment:
+      # Docker Engine 29+ rejects API versions below 1.44 (watchtower defaults to 1.25)
+      - DOCKER_API_VERSION=1.44
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 300 --cleanup --label-enable
