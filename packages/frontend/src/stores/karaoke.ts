@@ -21,16 +21,23 @@ const WS_CLOSE_TOKEN_ROTATED = 4001;
 const POLAROID_BURST_MS = 8000;
 const MAX_LIVE_POLAROIDS = 3;
 
+// randomUUID is secure-context only; guests reach us over plain HTTP on the LAN
+function randomId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 // Anonymous per-device id so one phone gets one vote per song
 function readVoterId(): string {
   try {
     const stored = localStorage.getItem(VOTER_ID_KEY);
     if (stored) return stored;
-    const fresh = crypto.randomUUID();
+    const fresh = randomId();
     localStorage.setItem(VOTER_ID_KEY, fresh);
     return fresh;
   } catch {
-    return crypto.randomUUID(); // Private mode: unique for this session only
+    return randomId(); // Private mode: unique for this session only
   }
 }
 
