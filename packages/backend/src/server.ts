@@ -7,6 +7,8 @@ import { mkdirSync } from 'node:fs';
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { QueueManager } from './queueManager.ts';
+import { PolaroidStore } from './polaroidStore.ts';
+import type { PolaroidImageExt } from './polaroidStore.ts';
 import { searchYouTubeKaraoke } from './ytdlp.ts';
 import type {
   AdminFairQueueRequest,
@@ -16,6 +18,8 @@ import type {
   PlaybackCommand,
   QueueItem,
   ServerStatePayload,
+  SubmitPolaroidRequest,
+  VoteSuperlative,
   WsInboundMessage,
   WsOutboundMessage
 } from '@singpulse/shared/types';
@@ -35,6 +39,18 @@ const MAX_BAD_PINS = 10;
 // Ceiling across all clients: the per-client key can be rotated by anyone who can forge cf-connecting-ip
 const MAX_BAD_PINS_GLOBAL = 50;
 const PUBLIC_REMOTE_URL = process.env.PUBLIC_REMOTE_URL || `http://localhost:${PORT}`;
+
+const VOTE_SUPERLATIVES: ReadonlySet<string> = new Set<VoteSuperlative>(['GRAMMY_WORTHY', 'PURE_PASSION', 'STAGE_LEGEND', 'RIP_EARS']);
+
+// Polaroid uploads: phones send a ~50 KB canvas JPEG; anything larger is refused
+const POLAROID_MAX_DATA_URL = 350 * 1024;
+const POLAROID_BODY_LIMIT = 500 * 1024;
+const POLAROID_COOLDOWN_MS = 15 * 1000;
+const POLAROID_PREFIXES: ReadonlyArray<{ prefix: string; ext: PolaroidImageExt }> = [
+  { prefix: 'data:image/jpeg;base64,', ext: 'jpg' },
+  { prefix: 'data:image/webp;base64,', ext: 'webp' }
+];
+const BASE64_REGEX = /^[A-Za-z0-9+/]+={0,2}$/;
 
 const PLAYBACK_ACTIONS: ReadonlySet<string> = new Set<PlaybackCommand['action']>(['toggle_pause', 'skip', 'restart', 'volume']);
 
@@ -112,7 +128,9 @@ function broadcast(msg: WsOutboundMessage): void {
   }
 }
 
-const queueManager = new QueueManager(PARTY_TOKEN, PUBLIC_REMOTE_URL, broadcast);
+const polaroidStore = new PolaroidStore(path.join(CACHE_DIR, 'polaroids'));
+await polaroidStore.load();
+const queueManager = new QueueManager(PARTY_TOKEN, PUBLIC_REMOTE_URL, broadcast, () => polaroidStore.latest());
 
 function isTrustedLanRequest(ip: string, headers: Record<string, unknown>): boolean {
   if (headers['cf-connecting-ip']) return false;
@@ -182,7 +200,10 @@ function parseInboundMessage(raw: string): WsInboundMessage | null {
   }
   if (typeof msg !== 'object' || msg === null) return null;
 
-  const candidate = msg as { type?: unknown; id?: unknown; command?: unknown };
+  const candidate = msg as {
+    type?: unknown; id?: unknown; command?: unknown;
+    songId?: unknown; voterId?: unknown; stars?: unknown; superlative?: unknown;
+  };
   switch (candidate.type) {
     case 'PING':
       return { type: 'PING' };
@@ -197,6 +218,22 @@ function parseInboundMessage(raw: string): WsInboundMessage | null {
         command: { action: command.action as PlaybackCommand['action'], ...(value === undefined ? {} : { value }) }
       };
     }
+    case 'SUBMIT_VOTE': {
+      const { songId, voterId, stars, superlative } = candidate;
+      if (typeof songId !== 'string' || songId.length > 64) return null;
+      if (typeof voterId !== 'string' || voterId.length < 8 || voterId.length > 64) return null;
+      if (typeof stars !== 'number' || !Number.isInteger(stars)) return null;
+      if (superlative !== undefined && (typeof superlative !== 'string' || !VOTE_SUPERLATIVES.has(superlative))) return null;
+      return {
+        type: 'SUBMIT_VOTE',
+        songId,
+        voterId,
+        stars,
+        ...(superlative === undefined ? {} : { superlative: superlative as VoteSuperlative })
+      };
+    }
+    case 'SKIP_VOTE':
+      return { type: 'SKIP_VOTE' };
     default:
       return null;
   }
@@ -236,6 +273,10 @@ app.get('/ws', { websocket: true }, (socket, req) => {
       queueManager.handleSongEnded(msg.id);
     } else if (msg.type === 'PLAYER_COMMAND') {
       queueManager.sendCommand(msg.command);
+    } else if (msg.type === 'SUBMIT_VOTE') {
+      queueManager.submitVote(msg.voterId, msg.songId, msg.stars, msg.superlative);
+    } else if (msg.type === 'SKIP_VOTE') {
+      if (tv) queueManager.skipVote(); // Only the stage receiver may cut the intermission short
     } else if (msg.type === 'PING') {
       const pong: WsOutboundMessage = { type: 'PONG' };
       socket.send(JSON.stringify(pong));
@@ -317,6 +358,66 @@ app.delete('/api/queue/:id', {
   const { id } = req.params as { id: string };
   queueManager.remove(id);
   return { ok: true };
+});
+
+// Polaroid photo-bomb: persisted to disk, rate limited per client
+const lastPolaroidAt = new Map<string, number>();
+setInterval(() => {
+  const cutoff = Date.now() - POLAROID_COOLDOWN_MS;
+  for (const [key, at] of lastPolaroidAt) {
+    if (at <= cutoff) lastPolaroidAt.delete(key);
+  }
+}, POLAROID_COOLDOWN_MS).unref();
+
+function hasImageMagic(buffer: Buffer, ext: PolaroidImageExt): boolean {
+  if (ext === 'jpg') return buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  return buffer.length > 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
+}
+
+app.post('/api/polaroid', {
+  bodyLimit: POLAROID_BODY_LIMIT,
+  schema: {
+    body: {
+      type: 'object',
+      required: ['imageDataUrl', 'sender'],
+      additionalProperties: false,
+      properties: {
+        imageDataUrl: { type: 'string', maxLength: POLAROID_MAX_DATA_URL },
+        sender: { type: 'string', minLength: 1, maxLength: 32, pattern: '\\S' },
+        caption: { type: 'string', maxLength: 24 }
+      }
+    }
+  }
+}, async (req, reply) => {
+  if (!isAuthorizedRequest(req)) {
+    return reply.code(401).send({ error: 'Unauthorized' });
+  }
+  const body = req.body as SubmitPolaroidRequest;
+  const format = POLAROID_PREFIXES.find(({ prefix }) => body.imageDataUrl.startsWith(prefix));
+  if (!format) return reply.code(400).send({ error: 'Image must be a base64 JPEG or WebP' });
+  const encoded = body.imageDataUrl.slice(format.prefix.length);
+  if (!BASE64_REGEX.test(encoded)) return reply.code(400).send({ error: 'Invalid image data' });
+  const buffer = Buffer.from(encoded, 'base64');
+  if (!hasImageMagic(buffer, format.ext)) return reply.code(400).send({ error: 'Invalid image data' });
+
+  const key = clientKey(req.ip, req.headers);
+  const now = Date.now();
+  const waitMs = (lastPolaroidAt.get(key) ?? 0) + POLAROID_COOLDOWN_MS - now;
+  if (waitMs > 0) {
+    return reply.code(429).header('retry-after', String(Math.ceil(waitMs / 1000))).send({ error: 'Slow down' });
+  }
+  lastPolaroidAt.set(key, now);
+
+  const caption = body.caption?.trim();
+  const item = await polaroidStore.add({
+    buffer,
+    ext: format.ext,
+    sender: body.sender.trim(),
+    ...(caption ? { caption } : {})
+  });
+  broadcast({ type: 'POLAROID_BURST', payload: item });
+  queueManager.sync();
+  return reply.code(201).send(item);
 });
 
 // 5. Host Mode (admin): party-token auth plus the host PIN on every route
@@ -410,6 +511,15 @@ await app.register(
     }, async (req, reply) => {
       const { id } = req.params as { id: string };
       if (!queueManager.remove(id)) return reply.code(404).send({ error: 'Queue item not found' });
+      return { ok: true };
+    });
+
+    admin.delete('/polaroid/:id', {
+      schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string', format: 'uuid' } } } }
+    }, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      if (!(await polaroidStore.remove(id))) return reply.code(404).send({ error: 'Polaroid not found' });
+      queueManager.sync();
       return { ok: true };
     });
 

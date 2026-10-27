@@ -95,7 +95,10 @@ describe('QueueManager', () => {
     manager.handleSongEnded('not-the-current-id');
     assert.equal(manager.getState().currentSong?.id, current.id);
 
+    // The real end opens the crowd vote; the next song starts once it is over
     manager.handleSongEnded(current.id);
+    assert.equal(manager.getState().currentSong, null);
+    manager.skipVote();
     assert.equal(manager.getState().currentSong?.videoId, 'bbbbbbbbbb1');
   });
 
@@ -206,5 +209,139 @@ describe('QueueManager', () => {
       assert.equal(manager.getState().partyToken, 'zzz999');
       assert.equal(messages.at(-1)?.type, 'STATE_SYNC');
     });
+  });
+});
+
+describe('QueueManager crowd vote', () => {
+  let messages: WsOutboundMessage[];
+  let manager: InstanceType<typeof QueueManager>;
+
+  // Two ready songs: the first is playing, the second waits in the queue
+  async function startParty(): Promise<QueueItem> {
+    manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
+    manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+    downloads.get('aaaaaaaaaa1')?.resolve('/media/aaaaaaaaaa1.mp4');
+    downloads.get('bbbbbbbbbb1')?.resolve('/media/bbbbbbbbbb1.mp4');
+    await flush();
+    const current = manager.getState().currentSong;
+    assert.ok(current);
+    return current;
+  }
+
+  beforeEach(() => {
+    downloads.clear();
+    messages = [];
+    manager = new QueueManager('abc123', 'https://sing.example.com', (msg) => messages.push(msg));
+  });
+
+  it('opens a vote instead of starting the next song when a song ends', async () => {
+    const song = await startParty();
+    manager.handleSongEnded(song.id);
+
+    const state = manager.getState();
+    assert.equal(state.currentSong, null);
+    assert.equal(state.activeVote?.songId, song.id);
+    assert.equal(state.activeVote?.singer, 'Alice');
+    assert.equal(state.activeVote?.revealed, false);
+    assert.equal(state.activeVote?.totalVotes, 0);
+    assert.equal(state.queue.length, 1);
+  });
+
+  it('tallies votes and dedupes by voterId', async () => {
+    const song = await startParty();
+    manager.handleSongEnded(song.id);
+
+    assert.equal(manager.submitVote('voter-0001', song.id, 5, 'GRAMMY_WORTHY'), true);
+    assert.equal(manager.submitVote('voter-0002', song.id, 2, 'RIP_EARS'), true);
+    assert.equal(manager.getState().activeVote?.averageStars, 3.5);
+
+    // Same device taps again: the vote is replaced, not added
+    manager.submitVote('voter-0002', song.id, 4, 'GRAMMY_WORTHY');
+    const vote = manager.getState().activeVote;
+    assert.equal(vote?.totalVotes, 2);
+    assert.equal(vote?.averageStars, 4.5);
+    assert.deepEqual(vote?.superlativeCounts, { GRAMMY_WORTHY: 2, PURE_PASSION: 0, STAGE_LEGEND: 0, RIP_EARS: 0 });
+  });
+
+  it('ignores invalid and stale votes', async () => {
+    const song = await startParty();
+    assert.equal(manager.submitVote('voter-0001', song.id, 5), false); // no vote open yet
+    manager.handleSongEnded(song.id);
+
+    assert.equal(manager.submitVote('voter-0001', 'other-song', 5), false);
+    assert.equal(manager.submitVote('voter-0001', song.id, 0), false);
+    assert.equal(manager.submitVote('voter-0001', song.id, 6), false);
+    assert.equal(manager.submitVote('voter-0001', song.id, 3.5), false);
+    assert.equal(manager.getState().activeVote?.totalVotes, 0);
+  });
+
+  it('reveals after 7s, locks votes, then starts the next song at 10s', async () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    try {
+      const song = await startParty();
+      manager.handleSongEnded(song.id);
+      const endsAt = manager.getState().activeVote?.endsAt ?? 0;
+      assert.equal(endsAt, Date.now() + 10000);
+
+      mock.timers.tick(7000);
+      assert.equal(manager.getState().activeVote?.revealed, true);
+      assert.equal(manager.submitVote('voter-0001', song.id, 5), false);
+      assert.equal(manager.getState().currentSong, null);
+
+      mock.timers.tick(3000);
+      const state = manager.getState();
+      assert.equal(state.activeVote, null);
+      assert.equal(state.currentSong?.videoId, 'bbbbbbbbbb1');
+      assert.equal(state.currentSong?.status, 'playing');
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it('skipVote ends the intermission early and cancels the timers', async () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    try {
+      const song = await startParty();
+      manager.handleSongEnded(song.id);
+      manager.skipVote();
+
+      assert.equal(manager.getState().activeVote, null);
+      assert.equal(manager.getState().currentSong?.videoId, 'bbbbbbbbbb1');
+      const before = messages.length;
+      mock.timers.tick(10000); // cancelled timers must not rebroadcast or skip again
+      assert.equal(messages.length, before);
+      assert.equal(manager.getState().currentSong?.videoId, 'bbbbbbbbbb1');
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it('does not open a vote when the host skips', async () => {
+    await startParty();
+    manager.skipCurrent();
+
+    assert.equal(manager.getState().activeVote, null);
+    assert.equal(manager.getState().currentSong?.videoId, 'bbbbbbbbbb1');
+  });
+
+  it('holds a finished download until the vote ends', async () => {
+    const song = await startParty();
+    manager.enqueue(track('cccccccccc1', 'Cleo'));
+    manager.handleSongEnded(song.id);
+    manager.skipVote(); // Bob starts
+    manager.handleSongEnded(manager.getState().currentSong?.id ?? '');
+    downloads.get('cccccccccc1')?.resolve('/media/cccccccccc1.mp4');
+    await flush();
+
+    assert.ok(manager.getState().activeVote);
+    assert.equal(manager.getState().currentSong, null);
+    manager.skipVote();
+    assert.equal(manager.getState().currentSong?.videoId, 'cccccccccc1');
+  });
+
+  it('includes saved polaroids in state', () => {
+    const photo = { id: 'p1', imageUrl: '/media/polaroids/p1.jpg', sender: 'Alice', rotationDeg: 2, createdAt: 1 };
+    const withWall = new QueueManager('abc123', 'https://sing.example.com', () => {}, () => [photo]);
+    assert.deepEqual(withWall.getState().polaroids, [photo]);
   });
 });

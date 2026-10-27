@@ -32,6 +32,42 @@ export interface PlaybackCommand {
   value?: number;
 }
 
+// A saved instant-film photo on the club wall (image lives under /media/polaroids/)
+export interface PolaroidItem {
+  id: string;
+  imageUrl: string;        // e.g. '/media/polaroids/<id>.jpg'
+  sender: string;
+  caption?: string;
+  rotationDeg: number;     // -6..+6 tilt
+  createdAt: number;       // epoch ms
+}
+
+export interface SubmitPolaroidRequest {
+  imageDataUrl: string;    // 'data:image/jpeg;base64,...' or 'data:image/webp;base64,...'
+  sender: string;
+  caption?: string;
+}
+
+export type VoteSuperlative = 'GRAMMY_WORTHY' | 'PURE_PASSION' | 'STAGE_LEGEND' | 'RIP_EARS';
+
+export interface VotingSessionState {
+  songId: string;
+  songTitle: string;
+  singer: string;
+  endsAt: number;          // epoch ms, 10 seconds after the song ended
+  totalVotes: number;
+  averageStars: number;    // 1.0 to 5.0 (0 while no votes)
+  superlativeCounts: Record<VoteSuperlative, number>;
+  revealed: boolean;       // false during the first 7s, true for the final 3s reveal
+}
+
+export interface VoteSubmission {
+  songId: string;
+  voterId: string;
+  stars: number;
+  superlative?: VoteSuperlative;
+}
+
 export interface ServerStatePayload {
   type: 'STATE_SYNC';
   // Only sent to the TV receiver: guests and the host never learn the live token
@@ -42,6 +78,13 @@ export interface ServerStatePayload {
   currentSong: QueueItem | null;
   queue: QueueItem[];
   fairQueueEnabled: boolean;
+  activeVote: VotingSessionState | null;
+  polaroids: PolaroidItem[];  // latest saved photos, oldest first
+}
+
+export interface ServerPolaroidPayload {
+  type: 'POLAROID_BURST';
+  payload: PolaroidItem;
 }
 
 export interface ServerCommandPayload {
@@ -56,12 +99,15 @@ export interface ServerPongPayload {
 export type WsOutboundMessage =
   | ServerStatePayload
   | ServerCommandPayload
-  | ServerPongPayload;
+  | ServerPongPayload
+  | ServerPolaroidPayload;
 
 export type WsInboundMessage =
   | { type: 'SONG_ENDED'; id: string }
   | { type: 'PLAYER_COMMAND'; command: PlaybackCommand }
-  | { type: 'PING' };
+  | { type: 'PING' }
+  | ({ type: 'SUBMIT_VOTE' } & VoteSubmission)
+  | { type: 'SKIP_VOTE' };
 
 // --- Host Mode (admin) REST payloads: all require the `x-admin-pin` header ---
 

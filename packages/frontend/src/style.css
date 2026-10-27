@@ -11,6 +11,7 @@
   --color-neon-coral: #ff2a5f;
   --color-acid-lime: #c8ff00;
   --color-vinyl-amber: #ff9e00;
+  --color-film-paper: #f4f1ea;
 
   /* Semantic aliases: SongStatus treatments shared by the TV and the remote */
   --color-status-idle: rgb(255 255 255 / 0.7);
@@ -28,6 +29,10 @@
   --animate-cue-out: cue-out 0.6s cubic-bezier(0.7, 0, 0.84, 0) forwards;
   --animate-rise-in: rise-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
   --animate-shimmer: shimmer 1.4s ease-in-out infinite;
+  --animate-polaroid-in: polaroid-in 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  --animate-vote-drain: vote-drain 10s linear forwards;
+  --animate-pill-pop: pill-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  --animate-sheet-up: sheet-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 
   @keyframes eq-bar {
     from { transform: scaleY(0.25); }
@@ -54,6 +59,27 @@
   @keyframes rise-in {
     from { opacity: 0; transform: translate3d(0, 0.75em, 0); }
     to { opacity: 1; transform: translate3d(0, 0, 0); }
+  }
+
+  /* Instant-film print slides in from the edge and settles with a spring overshoot */
+  @keyframes polaroid-in {
+    from { opacity: 0; transform: translate3d(-120%, 40%, 0) rotate(calc(var(--tilt, 0deg) - 14deg)) scale(0.9); }
+    to { opacity: 1; transform: translate3d(0, 0, 0) rotate(var(--tilt, 0deg)) scale(1); }
+  }
+
+  @keyframes vote-drain {
+    from { transform: scaleX(1); }
+    to { transform: scaleX(0); }
+  }
+
+  @keyframes pill-pop {
+    from { transform: scale(1.18); }
+    to { transform: scale(1); }
+  }
+
+  @keyframes sheet-up {
+    from { transform: translate3d(0, 100%, 0); }
+    to { transform: translate3d(0, 0, 0); }
   }
 
   @keyframes shimmer {

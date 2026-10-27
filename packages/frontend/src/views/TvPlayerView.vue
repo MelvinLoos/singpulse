@@ -8,6 +8,9 @@ import { STATUS_META, TONE_TEXT } from '../lib/status.ts';
 import { cleanTitle, displayHost, formatDuration, formatIndex, formatTimecode, splitArtist } from '../lib/format.ts';
 import SegmentBar from '../components/SegmentBar.vue';
 import EqualizerBadge from '../components/EqualizerBadge.vue';
+import PolaroidBursts from '../components/PolaroidBursts.vue';
+import PolaroidFrame from '../components/PolaroidFrame.vue';
+import CrowdVoteStage from '../components/CrowdVoteStage.vue';
 
 const CUE_DURATION_MS = 3200;
 const CUE_EXIT_MS = 600;
@@ -30,6 +33,14 @@ watch(
 );
 
 const upcoming = computed(() => store.queue.slice(0, 4));
+// Idle photo wall: the latest few prints, newest on the right
+const wallPhotos = computed(() => store.polaroids.slice(-4));
+const wallLayout = [
+  'left-0 top-[1.5rem]',
+  'left-[5.5rem] top-[4.5rem]',
+  'left-[11rem] top-[0.5rem]',
+  'left-[16.5rem] top-[3.5rem]'
+];
 const nextUp = computed(() => store.queue.find((item) => item.status !== 'error') ?? null);
 const joinHost = computed(() => `${displayHost(store.remoteBaseUrl)}/REMOTE`);
 const nowPlaying = computed(() => (store.currentSong ? splitArtist(store.currentSong.title) : null));
@@ -140,6 +151,12 @@ function onVideoError(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  // Crowd vote intermission: OK / next skips straight to the next track
+  if (store.activeVote && ['Enter', 'MediaTrackNext', 'ArrowRight', ' '].includes(event.key)) {
+    event.preventDefault();
+    if (!event.repeat) store.skipVote();
+    return;
+  }
   let command: PlaybackCommand | null = null;
   switch (event.key) {
     case 'Enter':
@@ -298,6 +315,21 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
             </span>
           </header>
 
+          <!-- Club memory wall: saved Polaroids from this and past parties -->
+          <div
+            v-if="wallPhotos.length"
+            class="pointer-events-none absolute top-[5.5rem] left-[26rem] h-[14rem] w-[26rem]"
+            aria-label="Club photo wall"
+          >
+            <PolaroidFrame
+              v-for="(item, index) in wallPhotos"
+              :key="item.id"
+              :item="item"
+              class="absolute w-[9rem] text-[1.5rem]"
+              :class="wallLayout[index]"
+            />
+          </div>
+
           <div class="mt-[2rem] motion-safe:animate-drift">
             <h1 class="font-display text-[6rem] leading-[0.8] font-extrabold tracking-tighter uppercase">
               Sing<br /><span class="text-acid-lime">Pulse</span>
@@ -382,6 +414,11 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
         </aside>
       </main>
     </template>
+
+    <PolaroidBursts v-if="store.currentSong?.mediaUrl && store.livePolaroidBursts.length" :items="store.livePolaroidBursts" />
+
+    <!-- POST-SONG CROWD VOTE -->
+    <CrowdVoteStage v-if="store.activeVote" :key="store.activeVote.songId" :vote="store.activeVote" />
 
     <!-- SONG-CHANGE CUE CARD -->
     <div

@@ -6,11 +6,48 @@ import type {
   QueueItem,
   SearchResult,
   PlaybackCommand,
+  PolaroidItem,
+  SubmitPolaroidRequest,
+  VoteSuperlative,
+  VotingSessionState,
   WsOutboundMessage
 } from '@singpulse/shared/types';
+import { compressPhoto } from '../lib/imageResize.ts';
+import { normaliseSingerName } from '../lib/singerName.ts';
 
 const ADMIN_PIN_KEY = 'singpulse_admin_pin';
+const VOTER_ID_KEY = 'singpulse_voter_id';
 const WS_CLOSE_TOKEN_ROTATED = 4001;
+const POLAROID_BURST_MS = 8000;
+const MAX_LIVE_POLAROIDS = 3;
+
+// Anonymous per-device id so one phone gets one vote per song
+function readVoterId(): string {
+  try {
+    const stored = localStorage.getItem(VOTER_ID_KEY);
+    if (stored) return stored;
+    const fresh = crypto.randomUUID();
+    localStorage.setItem(VOTER_ID_KEY, fresh);
+    return fresh;
+  } catch {
+    return crypto.randomUUID(); // Private mode: unique for this session only
+  }
+}
+
+export class PolaroidCooldownError extends Error {
+  retryAfterSeconds: number;
+
+  constructor(retryAfterSeconds: number) {
+    super('Polaroid cooldown');
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+interface MyVote {
+  songId: string;
+  stars: number;
+  superlative?: VoteSuperlative;
+}
 
 function readStoredPin(): string | null {
   try {
@@ -41,6 +78,15 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   const tokenExpired = ref<boolean>(false);
   const adminPin = ref<string | null>(readStoredPin());
   const isAdmin = ref<boolean>(false);
+  const activeVote = ref<VotingSessionState | null>(null);
+  const polaroids = ref<PolaroidItem[]>([]);
+  const livePolaroidBursts = ref<PolaroidItem[]>([]);
+  const voterId = readVoterId();
+  const myCurrentVote = ref<MyVote | null>(null);
+  const hasVotedCurrentSong = computed(
+    () => activeVote.value !== null && myCurrentVote.value?.songId === activeVote.value.songId
+  );
+  const burstTimers = new Set<ReturnType<typeof setTimeout>>();
 
   let ws: WebSocket | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -91,6 +137,10 @@ export const useKaraokeStore = defineStore('karaoke', () => {
         queue.value = data.queue;
         isPaused.value = data.isPaused;
         fairQueueEnabled.value = data.fairQueueEnabled;
+        activeVote.value = data.activeVote;
+        polaroids.value = data.polaroids;
+      } else if (data.type === 'POLAROID_BURST') {
+        showPolaroidBurst(data.payload);
       } else if (data.type === 'PLAYER_COMMAND' && onCommandCallback) {
         onCommandCallback(data.command);
       }
@@ -109,6 +159,16 @@ export const useKaraokeStore = defineStore('karaoke', () => {
     });
   }
 
+  // A fresh photo floats over the video briefly; the wall keeps it permanently
+  function showPolaroidBurst(item: PolaroidItem) {
+    livePolaroidBursts.value = [...livePolaroidBursts.value, item].slice(-MAX_LIVE_POLAROIDS);
+    const timer = setTimeout(() => {
+      burstTimers.delete(timer);
+      livePolaroidBursts.value = livePolaroidBursts.value.filter((p) => p.id !== item.id);
+    }, POLAROID_BURST_MS);
+    burstTimers.add(timer);
+  }
+
   // Keep a ?token= in the address bar in step so a reload rejoins with the live token
   function setPartyToken(token: string) {
     partyToken.value = token;
@@ -121,6 +181,51 @@ export const useKaraokeStore = defineStore('karaoke', () => {
 
   function notifySongEnded(id: string) {
     ws?.send(JSON.stringify({ type: 'SONG_ENDED', id }));
+  }
+
+  // Tapping a star or a pad updates one vote; the other half of it is kept
+  function submitCrowdVote(stars?: number, superlative?: VoteSuperlative) {
+    const vote = activeVote.value;
+    if (!vote || vote.revealed) return;
+    const previous = myCurrentVote.value?.songId === vote.songId ? myCurrentVote.value : null;
+    const nextStars = stars ?? previous?.stars ?? 3;
+    const nextSuperlative = superlative ?? previous?.superlative;
+    myCurrentVote.value = {
+      songId: vote.songId,
+      stars: nextStars,
+      ...(nextSuperlative ? { superlative: nextSuperlative } : {})
+    };
+    ws?.send(JSON.stringify({
+      type: 'SUBMIT_VOTE',
+      songId: vote.songId,
+      voterId,
+      stars: nextStars,
+      ...(nextSuperlative ? { superlative: nextSuperlative } : {})
+    }));
+  }
+
+  // TV remote: cut the intermission short
+  function skipVote() {
+    ws?.send(JSON.stringify({ type: 'SKIP_VOTE' }));
+  }
+
+  async function sendPolaroid(file: File, caption?: string, sender = 'GUEST') {
+    const body: SubmitPolaroidRequest = {
+      imageDataUrl: await compressPhoto(file),
+      sender: normaliseSingerName(sender) || 'GUEST',
+      ...(caption?.trim() ? { caption: caption.trim().slice(0, 24) } : {})
+    };
+    const res = await fetch('/api/polaroid', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-party-token': partyToken.value },
+      body: JSON.stringify(body)
+    });
+    if (res.status === 429) throw new PolaroidCooldownError(Number(res.headers.get('retry-after')) || 15);
+    if (!res.ok) throw new Error(`Polaroid upload failed (${res.status})`);
+  }
+
+  async function deletePolaroid(id: string) {
+    await adminCall(`/polaroid/${id}`, { method: 'DELETE' });
   }
 
   function sendCommand(command: PlaybackCommand) {
@@ -268,6 +373,15 @@ export const useKaraokeStore = defineStore('karaoke', () => {
     isPaused,
     connected,
     connect,
+    activeVote,
+    polaroids,
+    livePolaroidBursts,
+    myCurrentVote,
+    hasVotedCurrentSong,
+    submitCrowdVote,
+    skipVote,
+    sendPolaroid,
+    deletePolaroid,
     notifySongEnded,
     sendCommand,
     registerCommandHandler,

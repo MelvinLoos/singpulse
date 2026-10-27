@@ -5,12 +5,23 @@ import type {
   QueueItem,
   ServerStatePayload,
   PlaybackCommand,
+  PolaroidItem,
+  VoteSuperlative,
+  VotingSessionState,
   WsOutboundMessage
 } from '@singpulse/shared/types';
 
 type BroadcastFn = (msg: WsOutboundMessage) => void;
 
 const MAX_CONCURRENT_DOWNLOADS = 3;
+const VOTE_REVEAL_MS = 7000;
+const VOTE_TOTAL_MS = 10000;
+const SUPERLATIVES: readonly VoteSuperlative[] = ['GRAMMY_WORTHY', 'PURE_PASSION', 'STAGE_LEGEND', 'RIP_EARS'];
+
+interface CastVote {
+  stars: number;
+  superlative?: VoteSuperlative;
+}
 
 const singerKey = (singer: string): string => singer.trim().toLowerCase();
 
@@ -23,11 +34,21 @@ export class QueueManager {
   private partyToken: string;
   private remoteBaseUrl: string;
   private broadcast: BroadcastFn;
+  private getPolaroids: () => PolaroidItem[];
+  private activeVote: VotingSessionState | null = null;
+  private votes = new Map<string, CastVote>();
+  private voteTimers: NodeJS.Timeout[] = [];
 
-  constructor(partyToken: string, remoteBaseUrl: string, broadcast: BroadcastFn) {
+  constructor(
+    partyToken: string,
+    remoteBaseUrl: string,
+    broadcast: BroadcastFn,
+    getPolaroids: () => PolaroidItem[] = () => []
+  ) {
     this.partyToken = partyToken;
     this.remoteBaseUrl = remoteBaseUrl;
     this.broadcast = broadcast;
+    this.getPolaroids = getPolaroids;
   }
 
   public getState(): ServerStatePayload {
@@ -38,7 +59,9 @@ export class QueueManager {
       isPaused: this.isPaused,
       currentSong: this.currentSong,
       queue: this.queue,
-      fairQueueEnabled: this.fairQueueEnabled
+      fairQueueEnabled: this.fairQueueEnabled,
+      activeVote: this.activeVote,
+      polaroids: this.getPolaroids()
     };
   }
 
@@ -144,15 +167,80 @@ export class QueueManager {
   public skipCurrent(): void {
     this.currentSong = null;
     this.isPaused = false;
+    this.clearVote();
     this.advancePlayback();
   }
 
+  // A song that played to its end opens a 10 s crowd vote before the next track.
+  // Host skips and unknown/stale ids never do.
   public handleSongEnded(id: string): void {
     if (this.currentSong && this.currentSong.id === id) {
+      const song = this.currentSong;
       this.currentSong = null;
       this.isPaused = false;
-      this.advancePlayback();
+      this.startVote(song);
     }
+  }
+
+  private startVote(song: QueueItem): void {
+    this.clearVote();
+    this.activeVote = {
+      songId: song.id,
+      songTitle: song.title,
+      singer: song.singer,
+      endsAt: Date.now() + VOTE_TOTAL_MS,
+      totalVotes: 0,
+      averageStars: 0,
+      superlativeCounts: { GRAMMY_WORTHY: 0, PURE_PASSION: 0, STAGE_LEGEND: 0, RIP_EARS: 0 },
+      revealed: false
+    };
+    this.voteTimers = [
+      setTimeout(() => {
+        if (!this.activeVote) return;
+        this.activeVote = { ...this.activeVote, revealed: true };
+        this.sync();
+      }, VOTE_REVEAL_MS),
+      setTimeout(() => this.skipVote(), VOTE_TOTAL_MS)
+    ];
+    this.sync();
+  }
+
+  public submitVote(voterId: string, songId: string, stars: number, superlative?: VoteSuperlative): boolean {
+    const vote = this.activeVote;
+    if (!vote || vote.revealed || vote.songId !== songId || !voterId) return false;
+    if (!Number.isInteger(stars) || stars < 1 || stars > 5) return false;
+    if (superlative !== undefined && !SUPERLATIVES.includes(superlative)) return false;
+
+    this.votes.set(voterId, superlative ? { stars, superlative } : { stars });
+
+    const counts: Record<VoteSuperlative, number> = { GRAMMY_WORTHY: 0, PURE_PASSION: 0, STAGE_LEGEND: 0, RIP_EARS: 0 };
+    let starSum = 0;
+    for (const cast of this.votes.values()) {
+      starSum += cast.stars;
+      if (cast.superlative) counts[cast.superlative] += 1;
+    }
+    this.activeVote = {
+      ...vote,
+      totalVotes: this.votes.size,
+      averageStars: Math.round((starSum / this.votes.size) * 10) / 10,
+      superlativeCounts: counts
+    };
+    this.sync();
+    return true;
+  }
+
+  // Ends the intermission now (timer expiry, TV remote, or host) and starts the next song
+  public skipVote(): void {
+    if (!this.activeVote) return;
+    this.clearVote();
+    this.advancePlayback();
+  }
+
+  private clearVote(): void {
+    for (const timer of this.voteTimers) clearTimeout(timer);
+    this.voteTimers = [];
+    this.votes.clear();
+    this.activeVote = null;
   }
 
   public sendCommand(command: PlaybackCommand): void {
@@ -167,7 +255,7 @@ export class QueueManager {
   }
 
   private advancePlayback(): void {
-    if (this.currentSong !== null) return;
+    if (this.currentSong !== null || this.activeVote !== null) return;
 
     const nextReadyIdx = this.queue.findIndex((q) => q.status === 'ready');
     if (nextReadyIdx !== -1) {
@@ -208,7 +296,7 @@ export class QueueManager {
           item.status = 'ready';
           item.progress = 100;
           this.activeDownloads.delete(item.id);
-          if (!this.currentSong) {
+          if (!this.currentSong && !this.activeVote) {
             this.advancePlayback();
           } else {
             this.sync();
@@ -226,7 +314,7 @@ export class QueueManager {
     }
   }
 
-  private sync(): void {
+  public sync(): void {
     this.broadcast(this.getState());
   }
 }

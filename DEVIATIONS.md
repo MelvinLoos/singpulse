@@ -95,3 +95,13 @@ fixes a real bug, a toolchain incompatibility or a stated requirement the refere
 | `ADMIN_PIN` falls back to `1234`; compose uses `${ADMIN_PIN:-1234}` | Requested default for dev. Set your own for any internet-facing tunnel. |
 | Rotation closes every non-TV socket (including the host's); the host store reconnects itself with the new token | Matches the requested close code `4001` / `PARTY_TOKEN_ROTATED`. LAN-trusted clients need no token, so they rejoin immediately after a rotation. |
 | Close-code constants are not in `@singpulse/shared` | Shared is type-only (value imports from `node_modules` crash under native TS stripping). |
+
+## Crowd vote + Polaroid wall
+
+| Change | Why |
+| --- | --- |
+| The vote hooks into `QueueManager.handleSongEnded` (WS `SONG_ENDED`), not an `advance()` / `POST /api/next` | Those do not exist; the TV `ended` event already arrives as `SONG_ENDED`. Host skips (`skipCurrent`) open no vote. A TV `onerror` also sends `SONG_ENDED`, so a failed track opens a vote too. |
+| New inbound WS messages `SUBMIT_VOTE` and `SKIP_VOTE` (TV socket only); `STATE_SYNC` gains `activeVote` and `polaroids`; new outbound `POLAROID_BURST` | Votes are small, so they use the existing socket. `SKIP_VOTE` is TV-only so guests cannot cut the intermission short. |
+| `POST /api/polaroid` (REST, 500 KB body limit) rather than a WS message | The WS `maxPayload` is 4096 bytes. Rate limit is 1 photo per 15 s per `clientKey`. |
+| Polaroids persist in `${CACHE_DIR}/polaroids` (`index.json` plus image files, newest 200 kept) and are served by the existing `/media/` mount; `DELETE /api/admin/polaroid/:id` removes one | Photos survive container restarts and feed the idle-screen wall. |
+| `--color-film-paper` (`#f4f1ea`) added to `@theme` | The requested film-border colour, kept as a token so raw hex stays out of components. |

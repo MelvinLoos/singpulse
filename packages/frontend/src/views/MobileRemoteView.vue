@@ -30,6 +30,8 @@ import { MAX_SINGER_NAME_LENGTH, useSingerName } from '../lib/singerName.ts';
 import { cleanTitle, formatDuration, formatIndex } from '../lib/format.ts';
 import EqualizerBadge from '../components/EqualizerBadge.vue';
 import StatusBadge from '../components/StatusBadge.vue';
+import CrowdVoteSheet from '../components/CrowdVoteSheet.vue';
+import PolaroidCamera from '../components/PolaroidCamera.vue';
 
 const SEARCH_DEBOUNCE_MS = 350;
 const UNDO_WINDOW_MS = 5000;
@@ -421,6 +423,7 @@ async function commitReorder(from: number, to: number): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ sheets */
+const polaroidCamera = ref<InstanceType<typeof PolaroidCamera> | null>(null);
 const queueSheet = ref<HTMLDialogElement | null>(null);
 const nameSheet = ref<HTMLDialogElement | null>(null);
 const sheetOpen = ref(false);
@@ -502,6 +505,16 @@ const skeletonRows = 6;
             />
             <span :class="store.connected ? 'text-white/70' : 'text-vinyl-amber'">{{ store.connected ? 'LINK OK' : 'RECONNECTING' }}</span>
           </p>
+          <PolaroidCamera ref="polaroidCamera" @announce="announce" />
+          <button
+            v-if="store.isAdmin"
+            type="button"
+            class="px-1 font-mono text-[11px] font-bold tracking-widest text-white/70 uppercase active:text-acid-lime"
+            aria-label="Manage saved photos"
+            @click="polaroidCamera?.openWall()"
+          >
+            Wall {{ String(store.polaroids.length).padStart(2, '0') }}
+          </button>
           <button
             type="button"
             class="flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-key px-2 font-mono text-[11px] font-bold tracking-widest uppercase active:translate-y-px active:bg-surface-elevated"
@@ -1094,6 +1107,9 @@ const skeletonRows = 6;
         Scan the TV QR code to rejoin
       </p>
     </div>
+
+    <!-- POST-SONG CROWD VOTE -->
+    <CrowdVoteSheet v-if="store.activeVote" :key="store.activeVote.songId" :vote="store.activeVote" />
 
     <p class="sr-only" aria-live="polite">{{ announcement }}</p>
   </div>
