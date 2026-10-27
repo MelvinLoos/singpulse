@@ -7,7 +7,8 @@ services:
       - "3000:3000"
     environment:
       - PORT=3000
-      - PARTY_TOKEN=${PARTY_TOKEN:-pulse26}
+      # Unset = a random token per start (shown on the TV QR code and in the logs)
+      - PARTY_TOKEN=${PARTY_TOKEN:-}
       - PUBLIC_REMOTE_URL=${PUBLIC_REMOTE_URL:-https://sing.yourdomain.com}
       - MAX_CACHE_GB=${MAX_CACHE_GB:-25}
     volumes:
