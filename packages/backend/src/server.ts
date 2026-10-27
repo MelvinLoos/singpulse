@@ -32,6 +32,8 @@ const PARTY_TOKEN_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 const PARTY_TOKEN_LENGTH = 6;
 const WS_CLOSE_TOKEN_ROTATED = 4001;
 const MAX_BAD_PINS = 10;
+// Ceiling across all clients: the per-client key can be rotated by anyone who can forge cf-connecting-ip
+const MAX_BAD_PINS_GLOBAL = 50;
 const PUBLIC_REMOTE_URL = process.env.PUBLIC_REMOTE_URL || `http://localhost:${PORT}`;
 
 const PLAYBACK_ACTIONS: ReadonlySet<string> = new Set<PlaybackCommand['action']>(['toggle_pause', 'skip', 'restart', 'volume']);
@@ -319,6 +321,7 @@ app.delete('/api/queue/:id', {
 
 // 5. Host Mode (admin): party-token auth plus the host PIN on every route
 const badPinAttempts = new Map<string, { count: number; expiresAt: number }>();
+const globalBadPins = { count: 0, expiresAt: 0 };
 
 function pinMatches(pin: unknown): boolean {
   return typeof pin === 'string' && pin !== '' && timingSafeEqual(digest(pin), ADMIN_PIN_DIGEST);
@@ -336,6 +339,8 @@ await app.register(
         badPinAttempts.delete(key);
         attempts = undefined;
       }
+      if (globalBadPins.expiresAt <= now) Object.assign(globalBadPins, { count: 0, expiresAt: now + BAD_TOKEN_WINDOW_MS });
+      if (globalBadPins.count >= MAX_BAD_PINS_GLOBAL) return reply.code(429).send({ error: 'Too many attempts' });
       if (attempts && attempts.count >= MAX_BAD_PINS) return reply.code(429).send({ error: 'Too many attempts' });
 
       const bodyPin = (req.body as { pin?: unknown } | null | undefined)?.pin;
@@ -348,6 +353,7 @@ await app.register(
         badPinAttempts.set(key, attempts);
       }
       attempts.count += 1;
+      globalBadPins.count += 1;
       return reply.code(401).send({ error: 'Invalid PIN' });
     });
 
@@ -448,6 +454,6 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 await app.listen({ port: PORT, host: '0.0.0.0' });
-if (!process.env.ADMIN_PIN) app.log.warn('ADMIN_PIN is unset: Host Mode uses the default PIN 1234. Set ADMIN_PIN before exposing this server.');
+if (ADMIN_PIN === '1234') app.log.warn('ADMIN_PIN is the default 1234. Set your own before exposing this server.');
 // oxlint-disable-next-line no-console -- deliberate one-time token readout for the host operator (spec §5.4)
 console.log(`SingPulse Server Active | Party Token: ${PARTY_TOKEN}`);
