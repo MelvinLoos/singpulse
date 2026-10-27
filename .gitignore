@@ -22,5 +22,6 @@ cache/
 .vscode/*
 !.vscode/extensions.json
 
-# Claude Code per-user settings
+# Claude Code per-user settings and Playwright MCP screenshots
 .claude/settings.local.json
+.playwright-mcp/
