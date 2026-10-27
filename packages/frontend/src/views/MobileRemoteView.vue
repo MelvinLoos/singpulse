@@ -2,6 +2,8 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import {
   Check,
+  ChevronDown,
+  ChevronUp,
   Disc3,
   GripVertical,
   KeyRound,
@@ -888,6 +890,26 @@ const skeletonRows = 6;
             >
               <GripVertical class="size-5" :stroke-width="ICON_STROKE" />
             </button>
+            <div v-if="store.isAdmin" class="flex shrink-0 flex-col">
+              <button
+                type="button"
+                class="grid h-5 w-8 place-items-center rounded-key text-white/70 active:bg-surface-elevated disabled:opacity-30"
+                :disabled="index === 0"
+                :aria-label="`Move ${cleanTitle(item.title)} up`"
+                @click="commitReorder(index, index - 1)"
+              >
+                <ChevronUp class="size-4" :stroke-width="ICON_STROKE" />
+              </button>
+              <button
+                type="button"
+                class="grid h-5 w-8 place-items-center rounded-key text-white/70 active:bg-surface-elevated disabled:opacity-30"
+                :disabled="index === displayQueue.length - 1"
+                :aria-label="`Move ${cleanTitle(item.title)} down`"
+                @click="commitReorder(index, index + 1)"
+              >
+                <ChevronDown class="size-4" :stroke-width="ICON_STROKE" />
+              </button>
+            </div>
             <span class="w-6 shrink-0 font-mono text-xs text-white/70 tabular-nums">{{ formatIndex(index) }}</span>
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-semibold">{{ cleanTitle(item.title) }}</p>
