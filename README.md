@@ -126,7 +126,11 @@ Conventions: Conventional Commits, exact dependency pins, erasable TypeScript on
 ## Security model
 
 - Requests from RFC 1918 or loopback addresses **without** a `cf-connecting-ip` header are trusted.
-  Everything else needs the party token.
+  Everything else needs the party token. Don't put a plain reverse proxy on the LAN in front of
+  SingPulse: all of its traffic would look local and be trusted.
+- Browsers may only reach the API and WebSocket from pages served by SingPulse itself or from
+  `PUBLIC_REMOTE_URL`, so other websites can't drive the party through a guest's browser.
+- A client that sends 20 different wrong tokens is locked out for 15 minutes.
 - `yt-dlp` is only ever spawned via `execFile` with argument arrays. Video ids are validated against
   the 11-character YouTube format, and every REST body and WebSocket message is schema-checked.
 - Party tokens are redacted from request logs. The token is printed once at startup for the host.

@@ -45,6 +45,8 @@ fixes a real bug, a toolchain incompatibility or a stated requirement the refere
 | `?token=` is redacted in Fastify request logs | The default request serializer logged every guest's party token. |
 | `/api/search` returns 502 `Search unavailable` when yt-dlp fails | Previously this was an unhandled rejection surfaced as a generic 500. |
 | `GET /api/health` (unauthenticated, returns `{ ok: true }`) | Used by the Docker `HEALTHCHECK`. |
+| CORS `origin: true` replaced by an allow-list (same host or `PUBLIC_REMOTE_URL` origin), also enforced on every request including the `/ws` upgrade, which returns 403 otherwise | Cross-site WebSocket hijacking. WebSockets ignore CORS, and LAN clients are trusted by IP. Under the old rule, any web page a LAN guest opened could connect from the guest's browser, read `STATE_SYNC` (including the party token) and control playback. Requests without an `Origin` header (non-browser clients) are unaffected. |
+| Token check uses a constant-time comparison, and locks a client out after 20 *distinct* wrong tokens in 15 minutes | The spec's 6-char hex token has only about 16.7M possibilities, which is brute-forceable through a public tunnel. Counting only distinct guesses means a phone that keeps reconnecting with one stale token never gets locked out. Clients are keyed by `cf-connecting-ip` only when the peer is a local (tunnel) address. |
 | SIGINT/SIGTERM call `app.close()` | Node runs as PID 1 in the container and ignores signals without handlers, so `docker stop` waited 10 s and then sent SIGKILL. |
 
 ## Frontend
@@ -69,6 +71,7 @@ fixes a real bug, a toolchain incompatibility or a stated requirement the refere
 | `/etc/yt-dlp.conf` with `--js-runtimes node` | Current yt-dlp needs a JavaScript runtime to solve YouTube challenges and only enables Deno by default. Node 24 is already in the image. |
 | `curl -fsSL` and purge `curl` after use; `HEALTHCHECK` | `-f` fails the build instead of saving an HTML error page as the binary. The healthcheck backs Docker/Watchtower restarts. |
 | Compose: `MAX_CACHE_GB=${MAX_CACHE_GB:-25}` | Same default, but overridable from `.env`. |
+| Compose: `PARTY_TOKEN=${PARTY_TOKEN:-}` instead of `${PARTY_TOKEN:-pulse26}` | A default token published in the repository offers no protection on an internet-facing tunnel. When unset, the server generates a random token per start, as described in §5.1. |
 | Compose: `DOCKER_API_VERSION=1.44` on watchtower | Docker Engine 29 rejects the API version watchtower negotiates by default, so it would crash-loop. |
 
 ## CI/CD (§8)
