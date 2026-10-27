@@ -4,7 +4,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import fastifyCors from '@fastify/cors';
 import { mkdirSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { QueueManager } from './queueManager.ts';
 import { searchYouTubeKaraoke } from './ytdlp.ts';
@@ -20,6 +20,22 @@ const PUBLIC_REMOTE_URL = process.env.PUBLIC_REMOTE_URL || `http://localhost:${P
 
 const PLAYBACK_ACTIONS: ReadonlySet<string> = new Set<PlaybackCommand['action']>(['toggle_pause', 'skip', 'restart', 'volume']);
 
+// The 6-char party token (spec §5.1) is short, so cap how many distinct wrong
+// guesses one client may make. Repeating the same stale token never locks out.
+const MAX_DISTINCT_BAD_TOKENS = 20;
+const BAD_TOKEN_WINDOW_MS = 15 * 60 * 1000;
+const PRIVATE_IP_REGEX = /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|::ffff:192\.168\.|::1)/;
+
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+const PUBLIC_ORIGIN = originOf(PUBLIC_REMOTE_URL);
+
 mkdirSync(CACHE_DIR, { recursive: true });
 
 const app = Fastify({
@@ -34,7 +50,26 @@ const app = Fastify({
     }
   }
 });
-await app.register(fastifyCors, { origin: true });
+// Browsers send Origin on cross-site requests and on every WebSocket handshake
+// (which CORS does not cover). Only pages served by this host or the public
+// tunnel origin may talk to the API; otherwise any site a LAN guest visits
+// could ride on the guest's trusted LAN address.
+function isAllowedOrigin(origin: string | undefined, host: string | undefined): boolean {
+  if (!origin) return true; // Non-browser clients
+  const parsed = originOf(origin);
+  if (!parsed) return false;
+  return new URL(parsed).host === host || parsed === PUBLIC_ORIGIN;
+}
+
+app.addHook('onRequest', async (req, reply) => {
+  if (!isAllowedOrigin(req.headers.origin, req.headers.host)) {
+    return reply.code(403).send({ error: 'Origin not allowed' });
+  }
+});
+
+await app.register(fastifyCors, {
+  delegator: (req, callback) => callback(null, { origin: isAllowedOrigin(req.headers.origin, req.headers.host) })
+});
 await app.register(fastifyWebsocket, { options: { maxPayload: 4096 } });
 
 const clients = new Set<WebSocket>();
@@ -52,14 +87,56 @@ const queueManager = new QueueManager(PARTY_TOKEN, PUBLIC_REMOTE_URL, broadcast)
 
 function isTrustedLanRequest(ip: string, headers: Record<string, unknown>): boolean {
   if (headers['cf-connecting-ip']) return false;
-  return /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|::ffff:192\.168\.|::1)/.test(ip);
+  return PRIVATE_IP_REGEX.test(ip);
 }
 
-function isAuthorized(req: { ip: string; headers: Record<string, unknown>; query: Record<string, unknown> }): boolean {
-  const token = (req.query?.token as string) || (req.headers['x-party-token'] as string);
-  if (token === PARTY_TOKEN) return true;
-  return isTrustedLanRequest(req.ip, req.headers);
+const badTokenAttempts = new Map<string, { tokens: Set<string>; expiresAt: number }>();
+
+// Tunnel traffic arrives from a local cloudflared, so the real client is in
+// cf-connecting-ip; only believe that header when the peer itself is private.
+function clientKey(ip: string, headers: Record<string, unknown>): string {
+  const forwarded = headers['cf-connecting-ip'];
+  return typeof forwarded === 'string' && forwarded && PRIVATE_IP_REGEX.test(ip) ? forwarded : ip;
 }
+
+function digest(value: string): Buffer {
+  return createHash('sha256').update(value).digest();
+}
+
+const PARTY_TOKEN_DIGEST = digest(PARTY_TOKEN);
+
+function isAuthorized(req: { ip: string; headers: Record<string, unknown>; query: Record<string, unknown> }): boolean {
+  if (isTrustedLanRequest(req.ip, req.headers)) return true;
+
+  const token = (req.query?.token as string) || (req.headers['x-party-token'] as string);
+  if (typeof token !== 'string' || !token) return false;
+
+  const key = clientKey(req.ip, req.headers);
+  const now = Date.now();
+  let attempts = badTokenAttempts.get(key);
+  if (attempts && attempts.expiresAt <= now) {
+    badTokenAttempts.delete(key);
+    attempts = undefined;
+  }
+  if (attempts && attempts.tokens.size >= MAX_DISTINCT_BAD_TOKENS) return false;
+
+  if (timingSafeEqual(digest(token), PARTY_TOKEN_DIGEST)) return true;
+
+  if (!attempts) {
+    attempts = { tokens: new Set(), expiresAt: now + BAD_TOKEN_WINDOW_MS };
+    badTokenAttempts.set(key, attempts);
+  }
+  attempts.tokens.add(digest(token).toString('hex'));
+  return false;
+}
+
+// Forget expired lockout windows so the map cannot grow without bound
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, attempts] of badTokenAttempts) {
+    if (attempts.expiresAt <= now) badTokenAttempts.delete(key);
+  }
+}, BAD_TOKEN_WINDOW_MS).unref();
 
 function isAuthorizedRequest(req: FastifyRequest): boolean {
   return isAuthorized({ ip: req.ip, headers: req.headers, query: req.query as Record<string, unknown> });
