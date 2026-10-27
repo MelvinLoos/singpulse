@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Syne", "Space Grotesk", "Arial Narrow", "Helvetica Neue", sans-serif;
+  --font-sans: "Plus Jakarta Sans", "Inter", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --color-obsidian: #070709;
+  --color-surface: #111116;
+  --color-surface-elevated: #1a1a22;
+  --color-neon-coral: #ff2a5f;
+  --color-acid-lime: #c8ff00;
+  --color-vinyl-amber: #ff9e00;
+
+  /* Semantic aliases: SongStatus treatments shared by the TV and the remote */
+  --color-status-idle: rgb(255 255 255 / 0.7);
+  --color-status-busy: var(--color-vinyl-amber);
+  --color-status-ready: var(--color-acid-lime);
+  --color-status-fault: var(--color-neon-coral);
+
+  /* Radius scale: hairline modules, tactile keys, pills */
+  --radius-module: 2px;
+  --radius-key: 4px;
+
+  --animate-eq-bar: eq-bar 0.9s ease-in-out infinite alternate;
+  --animate-drift: drift 96s ease-in-out infinite alternate;
+  --animate-spin-up: spin-up 2.8s cubic-bezier(0.55, 0, 0.35, 1) forwards;
+  --animate-cue-out: cue-out 0.6s cubic-bezier(0.7, 0, 0.84, 0) forwards;
+  --animate-rise-in: rise-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-shimmer: shimmer 1.4s ease-in-out infinite;
+
+  @keyframes eq-bar {
+    from { transform: scaleY(0.25); }
+    to { transform: scaleY(1); }
+  }
+
+  /* Anti burn-in: idle elements wander a few pixels over a minute and a half */
+  @keyframes drift {
+    0% { transform: translate3d(0, 0, 0); }
+    50% { transform: translate3d(6px, -4px, 0); }
+    100% { transform: translate3d(-4px, 5px, 0); }
+  }
+
+  /* Signature moment: the platter spins up as a new singer takes the mic */
+  @keyframes spin-up {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(1440deg); }
+  }
+
+  @keyframes cue-out {
+    to { transform: translate3d(0, -100%, 0); }
+  }
+
+  @keyframes rise-in {
+    from { opacity: 0; transform: translate3d(0, 0.75em, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
+  }
+
+  @keyframes shimmer {
+    0%, 100% { opacity: 0.45; }
+    50% { opacity: 0.8; }
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    background-color: var(--color-obsidian);
+    -webkit-tap-highlight-color: transparent;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-obsidian font-sans text-white antialiased;
+  }
+
+  /* TV receiver: a fixed 80 x 45 rem canvas that scales with any 16:9 viewport
+     (1920x1080 -> 24px/rem, 960x540 -> 12px/rem) so the rem-based type scale
+     stays legible from the couch. */
+  html.tv-mode {
+    font-size: min(calc(100vw / 80), calc(100vh / 45));
+    cursor: none;
+    overflow: hidden;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-acid-lime);
+    outline-offset: 2px;
+  }
+
+  /* Keep page scroll from chaining under modal sheets (progressive enhancement;
+     showModal() already makes the page inert). */
+  dialog:modal {
+    overscroll-behavior: contain;
+  }
+
+  dialog::backdrop {
+    overflow: hidden;
+    overscroll-behavior: contain;
+    background-color: rgb(7 7 9 / 0.72);
+  }
+}
+
+@utility bg-grid-lines {
+  background-image:
+    repeating-linear-gradient(90deg, rgb(255 255 255 / 0.045) 0 1px, transparent 1px 100%),
+    repeating-linear-gradient(0deg, rgb(255 255 255 / 0.045) 0 1px, transparent 1px 100%);
+  background-size: 5rem 5rem;
+}
+
+@utility bg-vinyl-grooves {
+  background-image:
+    radial-gradient(circle, var(--color-obsidian) 0 14%, transparent 14.2%),
+    repeating-radial-gradient(circle, rgb(255 255 255 / 0.07) 0 1px, transparent 1px 7px);
+}
+
+@utility bg-perforation {
+  background-image: repeating-linear-gradient(90deg, rgb(255 255 255 / 0.22) 0 6px, transparent 6px 12px);
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+@utility pb-safe {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+@utility pt-safe {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+
+@utility px-safe {
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+}
+
+/* Broadcast HUD keeps its glass look only where backdrop-filter exists;
+   older TV WebViews get a solid panel instead of unreadable text over video. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .hud-glass {
+    background-color: rgb(7 7 9 / 0.95);
+  }
+}
