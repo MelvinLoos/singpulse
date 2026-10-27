@@ -27,6 +27,8 @@ function track(videoId: string, singer: string): Omit<QueueItem, 'id' | 'status'
 
 const videoId = (n: number) => `video${String(n).padStart(6, '0')}`;
 
+const queueOrder = (m: { getState(): { queue: QueueItem[] } }): string[] => m.getState().queue.map((q) => q.videoId);
+
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 describe('QueueManager', () => {
@@ -122,5 +124,87 @@ describe('QueueManager', () => {
     const item = manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
     manager.remove(item.id);
     assert.equal(manager.getState().queue.length, 0);
+  });
+
+  describe('host controls', () => {
+    it('round-robins by normalized singer name', () => {
+      manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
+      manager.enqueue(track('aaaaaaaaaa2', 'Alice'));
+      manager.enqueue(track('aaaaaaaaaa3', ' ALICE '));
+      manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+      manager.enqueue(track('bbbbbbbbbb2', 'bob'));
+
+      assert.deepEqual(queueOrder(manager), ['aaaaaaaaaa1', 'bbbbbbbbbb1', 'aaaaaaaaaa2', 'bbbbbbbbbb2', 'aaaaaaaaaa3']);
+    });
+
+    it('appends in arrival order when fair queue is off', () => {
+      manager.setFairQueue(false);
+      manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
+      manager.enqueue(track('aaaaaaaaaa2', 'Alice'));
+      manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+
+      assert.equal(manager.getState().fairQueueEnabled, false);
+      assert.deepEqual(queueOrder(manager), ['aaaaaaaaaa1', 'aaaaaaaaaa2', 'bbbbbbbbbb1']);
+    });
+
+    it('re-interleaves an existing queue when fair queue is switched on', () => {
+      manager.setFairQueue(false);
+      manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
+      manager.enqueue(track('aaaaaaaaaa2', 'Alice'));
+      manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+      manager.enqueue(track('bbbbbbbbbb2', 'Bob'));
+      manager.enqueue(track('cccccccccc1', 'Cleo'));
+
+      manager.setFairQueue(true);
+
+      assert.deepEqual(queueOrder(manager), ['aaaaaaaaaa1', 'bbbbbbbbbb1', 'cccccccccc1', 'aaaaaaaaaa2', 'bbbbbbbbbb2']);
+      assert.equal(messages.at(-1)?.type, 'STATE_SYNC');
+    });
+
+    it('lets the host reorder against fair rotation', () => {
+      manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
+      manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+      manager.enqueue(track('cccccccccc1', 'Cleo'));
+      const cleo = manager.getState().queue[2];
+      assert.ok(cleo);
+
+      assert.equal(manager.reorder(cleo.id, 0), true);
+      assert.deepEqual(queueOrder(manager), ['cccccccccc1', 'aaaaaaaaaa1', 'bbbbbbbbbb1']);
+      assert.equal(manager.reorder(cleo.id, 99), true); // clamps to the end
+      assert.deepEqual(queueOrder(manager), ['aaaaaaaaaa1', 'bbbbbbbbbb1', 'cccccccccc1']);
+      assert.equal(manager.reorder('missing', 0), false);
+    });
+
+    it('vetoes a queued track', () => {
+      manager.enqueue(track('aaaaaaaaaa1', 'Alice'));
+      manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+      const alice = manager.getState().queue[0];
+      assert.ok(alice);
+      const before = messages.length;
+
+      assert.equal(manager.remove(alice.id), true);
+      assert.deepEqual(queueOrder(manager), ['bbbbbbbbbb1']);
+      assert.ok(messages.length > before);
+      assert.equal(manager.remove(alice.id), false);
+    });
+
+    it('renames a singer without reordering', () => {
+      manager.enqueue(track('aaaaaaaaaa1', 'Alcie'));
+      manager.enqueue(track('bbbbbbbbbb1', 'Bob'));
+      const typo = manager.getState().queue[0];
+      assert.ok(typo);
+
+      assert.equal(manager.updateSinger(typo.id, '  Alice '), true);
+      assert.equal(manager.getState().queue[0]?.singer, 'Alice');
+      assert.deepEqual(queueOrder(manager), ['aaaaaaaaaa1', 'bbbbbbbbbb1']);
+      assert.equal(manager.updateSinger(typo.id, '   '), false);
+      assert.equal(manager.updateSinger('missing', 'X'), false);
+    });
+
+    it('swaps the party token and rebroadcasts state', () => {
+      manager.setPartyToken('zzz999');
+      assert.equal(manager.getState().partyToken, 'zzz999');
+      assert.equal(messages.at(-1)?.type, 'STATE_SYNC');
+    });
   });
 });

@@ -2,11 +2,32 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type {
+  AdminRotateTokenResponse,
   QueueItem,
   SearchResult,
   PlaybackCommand,
   WsOutboundMessage
 } from '@singpulse/shared/types';
+
+const ADMIN_PIN_KEY = 'singpulse_admin_pin';
+const WS_CLOSE_TOKEN_ROTATED = 4001;
+
+function readStoredPin(): string | null {
+  try {
+    return localStorage.getItem(ADMIN_PIN_KEY);
+  } catch {
+    return null; // Private mode: fall back to in-memory only
+  }
+}
+
+function writeStoredPin(pin: string | null): void {
+  try {
+    if (pin === null) localStorage.removeItem(ADMIN_PIN_KEY);
+    else localStorage.setItem(ADMIN_PIN_KEY, pin);
+  } catch {
+    // In-memory state still works for this session
+  }
+}
 
 export const useKaraokeStore = defineStore('karaoke', () => {
   const partyToken = ref<string>(new URLSearchParams(window.location.search).get('token') || '');
@@ -15,33 +36,46 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   const queue = ref<QueueItem[]>([]);
   const isPaused = ref<boolean>(false);
   const connected = ref<boolean>(false);
+  const fairQueueEnabled = ref<boolean>(true);
+  // Set when the server drops us because the party token was rotated or is dead
+  const tokenExpired = ref<boolean>(false);
+  const adminPin = ref<string | null>(readStoredPin());
+  const isAdmin = ref<boolean>(false);
 
   let ws: WebSocket | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let role: 'tv' | 'guest' = 'guest';
+  // True while this client's own rotation is in flight: its socket is dropped too
+  let rotatingSelf = false;
   let onCommandCallback: ((cmd: PlaybackCommand) => void) | null = null;
 
   const qrJoinUrl = computed(() => {
     return `${remoteBaseUrl.value}/remote?token=${partyToken.value}`;
   });
 
-  function connect() {
+  function connect(nextRole: 'tv' | 'guest' = role) {
+    role = nextRole;
+    if (tokenExpired.value) return;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}/ws?token=${encodeURIComponent(partyToken.value)}`;
-    ws = new WebSocket(wsUrl);
+    const roleParam = role === 'tv' ? '&role=tv' : '';
+    const wsUrl = `${proto}//${window.location.host}/ws?token=${encodeURIComponent(partyToken.value)}${roleParam}`;
+    const socket = new WebSocket(wsUrl);
+    ws = socket;
 
-    ws.addEventListener('open', () => {
+    socket.addEventListener('open', () => {
       connected.value = true;
       if (pingTimer) clearInterval(pingTimer);
       pingTimer = setInterval(() => {
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'PING' }));
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'PING' }));
         }
       }, 15000);
     });
 
-    ws.addEventListener('message', (event) => {
+    socket.addEventListener('message', (event) => {
       let data: WsOutboundMessage;
       try {
         data = JSON.parse(event.data) as WsOutboundMessage;
@@ -50,21 +84,39 @@ export const useKaraokeStore = defineStore('karaoke', () => {
       }
       if (data.type === 'PONG') return;
       if (data.type === 'STATE_SYNC') {
-        partyToken.value = data.partyToken;
+        // Only the TV is told the live token; everyone else keeps what they hold
+        if (data.partyToken) setPartyToken(data.partyToken);
         remoteBaseUrl.value = data.remoteBaseUrl;
         currentSong.value = data.currentSong;
         queue.value = data.queue;
         isPaused.value = data.isPaused;
+        fairQueueEnabled.value = data.fairQueueEnabled;
       } else if (data.type === 'PLAYER_COMMAND' && onCommandCallback) {
         onCommandCallback(data.command);
       }
     });
 
-    ws.addEventListener('close', () => {
+    socket.addEventListener('close', (event) => {
+      if (ws !== socket) return; // Superseded by a newer connection
       connected.value = false;
       if (pingTimer) clearInterval(pingTimer);
-      setTimeout(connect, 2000);
+      if (event.code === WS_CLOSE_TOKEN_ROTATED) {
+        // Dead token: stop retrying. Our own rotation reconnects with the fresh one.
+        if (!rotatingSelf) tokenExpired.value = true;
+        return;
+      }
+      reconnectTimer = setTimeout(() => connect(), 2000);
     });
+  }
+
+  // Keep a ?token= in the address bar in step so a reload rejoins with the live token
+  function setPartyToken(token: string) {
+    partyToken.value = token;
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('token') && url.searchParams.get('token') !== token) {
+      url.searchParams.set('token', token);
+      window.history.replaceState(window.history.state, '', url);
+    }
   }
 
   function notifySongEnded(id: string) {
@@ -108,8 +160,107 @@ export const useKaraokeStore = defineStore('karaoke', () => {
     if (!res.ok) throw new Error('Remove request failed');
   }
 
+  /* ------------------------------------------------------------ host mode */
+  function adminFetch(path: string, init: RequestInit = {}, pin = adminPin.value): Promise<Response> {
+    const headers: Record<string, string> = {
+      'x-party-token': partyToken.value,
+      'x-admin-pin': pin ?? '',
+      ...(init.body ? { 'Content-Type': 'application/json' } : {})
+    };
+    return fetch(`/api/admin${path}`, { ...init, headers });
+  }
+
+  async function adminCall(path: string, init: RequestInit = {}): Promise<Response> {
+    const res = await adminFetch(path, init);
+    if (res.status === 401) lockAdmin();
+    if (!res.ok) throw new Error(`Admin request failed (${res.status})`);
+    return res;
+  }
+
+  // Resolves false for a wrong PIN; rejects when the server cannot be reached
+  async function unlockAdmin(pin: string): Promise<boolean> {
+    const res = await adminFetch('/verify', { method: 'POST' }, pin);
+    if (res.status === 401) return false;
+    if (!res.ok) throw new Error(`Verify failed (${res.status})`);
+    adminPin.value = pin;
+    isAdmin.value = true;
+    writeStoredPin(pin);
+    return true;
+  }
+
+  // Re-validate a PIN remembered from an earlier visit
+  async function restoreAdmin(): Promise<void> {
+    if (!adminPin.value || isAdmin.value) return;
+    try {
+      const res = await adminFetch('/verify', { method: 'POST' });
+      if (res.ok) isAdmin.value = true;
+      else if (res.status === 401) lockAdmin();
+    } catch {
+      // Offline: stay locked until the next attempt
+    }
+  }
+
+  function lockAdmin() {
+    adminPin.value = null;
+    isAdmin.value = false;
+    writeStoredPin(null);
+  }
+
+  async function rotatePartyToken(): Promise<string> {
+    rotatingSelf = true;
+    try {
+      const res = await adminCall('/rotate-token', { method: 'POST' });
+      const { partyToken: next } = (await res.json()) as AdminRotateTokenResponse;
+      setPartyToken(next);
+      tokenExpired.value = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
+      ws = null;
+      connected.value = false;
+      rotatingSelf = false;
+      connect();
+      return next;
+    } finally {
+      rotatingSelf = false;
+    }
+  }
+
+  async function toggleFairQueue(enabled: boolean) {
+    fairQueueEnabled.value = enabled; // optimistic; STATE_SYNC confirms
+    try {
+      await adminCall('/fair-queue', { method: 'POST', body: JSON.stringify({ enabled }) });
+    } catch (err) {
+      fairQueueEnabled.value = !enabled;
+      throw err;
+    }
+  }
+
+  async function reorderQueue(itemId: string, toIndex: number) {
+    await adminCall('/queue/reorder', { method: 'POST', body: JSON.stringify({ itemId, toIndex }) });
+  }
+
+  async function vetoSong(itemId: string) {
+    await adminCall(`/queue/${itemId}`, { method: 'DELETE' });
+  }
+
+  async function renameSongSinger(itemId: string, singer: string) {
+    await adminCall(`/queue/${itemId}`, { method: 'PATCH', body: JSON.stringify({ singer }) });
+  }
+
   return {
     partyToken,
+    fairQueueEnabled,
+    tokenExpired,
+    adminPin,
+    isAdmin,
+    unlockAdmin,
+    restoreAdmin,
+    lockAdmin,
+    rotatePartyToken,
+    toggleFairQueue,
+    reorderQueue,
+    vetoSong,
+    renameSongSinger,
     remoteBaseUrl,
     qrJoinUrl,
     currentSong,

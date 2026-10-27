@@ -12,10 +12,13 @@ type BroadcastFn = (msg: WsOutboundMessage) => void;
 
 const MAX_CONCURRENT_DOWNLOADS = 3;
 
+const singerKey = (singer: string): string => singer.trim().toLowerCase();
+
 export class QueueManager {
   private currentSong: QueueItem | null = null;
   private queue: QueueItem[] = [];
   private isPaused = false;
+  private fairQueueEnabled = true;
   private activeDownloads = new Set<string>();
   private partyToken: string;
   private remoteBaseUrl: string;
@@ -34,7 +37,8 @@ export class QueueManager {
       remoteBaseUrl: this.remoteBaseUrl,
       isPaused: this.isPaused,
       currentSong: this.currentSong,
-      queue: this.queue
+      queue: this.queue,
+      fairQueueEnabled: this.fairQueueEnabled
     };
   }
 
@@ -51,31 +55,90 @@ export class QueueManager {
     return newItem;
   }
 
-  // Fair rotation: ensures everyone sings once in round-robin order
+  // Fair rotation: every singer's Nth queued song plays before anyone's (N+1)th.
+  // The new item goes after the last entry whose round is <= its own, so
+  // chronological order is kept within a round and manual host ordering of the
+  // rest of the queue is left alone.
   private insertWithFairRotation(newItem: QueueItem): void {
-    const singerKey = newItem.singer.trim().toLowerCase();
-    const existingCount = this.queue.filter(
-      (q) => q.singer.trim().toLowerCase() === singerKey
-    ).length;
-
-    if (existingCount === 0) {
-      const seenSingers = new Set<string>();
-      for (const [i, queued] of this.queue.entries()) {
-        const s = queued.singer.trim().toLowerCase();
-        if (seenSingers.has(s)) {
-          this.queue.splice(i, 0, newItem);
-          return;
-        }
-        seenSingers.add(s);
-      }
+    if (!this.fairQueueEnabled) {
+      this.queue.push(newItem);
+      return;
     }
-    this.queue.push(newItem);
+    const newRound = (this.countBySinger().get(singerKey(newItem.singer)) ?? 0) + 1;
+    const seen = new Map<string, number>();
+    let insertAt = 0;
+    for (const [i, queued] of this.queue.entries()) {
+      const key = singerKey(queued.singer);
+      const round = (seen.get(key) ?? 0) + 1;
+      seen.set(key, round);
+      if (round <= newRound) insertAt = i + 1;
+    }
+    this.queue.splice(insertAt, 0, newItem);
   }
 
-  public remove(id: string): void {
-    this.queue = this.queue.filter((item) => item.id !== id);
+  // Number of songs each singer already has queued
+  private countBySinger(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const item of this.queue) {
+      const key = singerKey(item.singer);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  // Stable re-interleave of the whole queue by per-singer round
+  private rebalance(): void {
+    const seen = new Map<string, number>();
+    const ranked = this.queue.map((item) => {
+      const key = singerKey(item.singer);
+      const round = (seen.get(key) ?? 0) + 1;
+      seen.set(key, round);
+      return { item, round };
+    });
+    ranked.sort((a, b) => a.round - b.round); // Array.prototype.sort is stable
+    this.queue = ranked.map((r) => r.item);
+  }
+
+  public setFairQueue(enabled: boolean): void {
+    if (enabled && !this.fairQueueEnabled) this.rebalance();
+    this.fairQueueEnabled = enabled;
     this.sync();
     void this.processQueue();
+  }
+
+  // Host override: honoured even when fair queue is on
+  public reorder(id: string, toIndex: number): boolean {
+    const from = this.queue.findIndex((item) => item.id === id);
+    if (from === -1 || !Number.isInteger(toIndex)) return false;
+    const [moved] = this.queue.splice(from, 1);
+    if (!moved) return false;
+    this.queue.splice(Math.max(0, Math.min(toIndex, this.queue.length)), 0, moved);
+    this.sync();
+    void this.processQueue();
+    return true;
+  }
+
+  public updateSinger(id: string, newSinger: string): boolean {
+    const singer = newSinger.trim();
+    const item = this.queue.find((q) => q.id === id);
+    if (!item || !singer) return false;
+    item.singer = singer;
+    this.sync();
+    return true;
+  }
+
+  public setPartyToken(token: string): void {
+    this.partyToken = token;
+    this.sync();
+  }
+
+  public remove(id: string): boolean {
+    const before = this.queue.length;
+    this.queue = this.queue.filter((item) => item.id !== id);
+    const removed = this.queue.length !== before;
+    this.sync();
+    void this.processQueue();
+    return removed;
   }
 
   public skipCurrent(): void {

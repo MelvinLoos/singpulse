@@ -34,11 +34,14 @@ export interface PlaybackCommand {
 
 export interface ServerStatePayload {
   type: 'STATE_SYNC';
-  partyToken: string;
+  // Only sent to the TV receiver: guests and the host never learn the live token
+  // from a broadcast, so a rotation cannot be undone by a kicked guest.
+  partyToken?: string;
   remoteBaseUrl: string;   // Public Cloudflare Tunnel URL for QR code generation
   isPaused: boolean;
   currentSong: QueueItem | null;
   queue: QueueItem[];
+  fairQueueEnabled: boolean;
 }
 
 export interface ServerCommandPayload {
@@ -59,3 +62,24 @@ export type WsInboundMessage =
   | { type: 'SONG_ENDED'; id: string }
   | { type: 'PLAYER_COMMAND'; command: PlaybackCommand }
   | { type: 'PING' };
+
+// --- Host Mode (admin) REST payloads: all require the `x-admin-pin` header ---
+
+export interface AdminReorderRequest {
+  itemId: string;
+  toIndex: number;
+}
+
+export interface AdminUpdateQueueItemRequest {
+  singer: string;
+}
+
+export interface AdminFairQueueRequest {
+  enabled: boolean;
+}
+
+export interface AdminRotateTokenResponse {
+  partyToken: string;
+}
+
+// Guest sockets dropped by a token rotation close with code 4001, reason 'PARTY_TOKEN_ROTATED'.

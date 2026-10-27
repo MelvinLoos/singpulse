@@ -138,6 +138,6 @@
    older TV WebViews get a solid panel instead of unreadable text over video. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .hud-glass {
-    background-color: rgb(7 7 9 / 0.95);
+    background-color: rgb(7 7 9 / 0.8);
   }
 }

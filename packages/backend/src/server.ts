@@ -4,18 +4,34 @@ import fastifyWebsocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import fastifyCors from '@fastify/cors';
 import { mkdirSync } from 'node:fs';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { QueueManager } from './queueManager.ts';
 import { searchYouTubeKaraoke } from './ytdlp.ts';
-import type { PlaybackCommand, QueueItem, WsInboundMessage, WsOutboundMessage } from '@singpulse/shared/types';
+import type {
+  AdminFairQueueRequest,
+  AdminReorderRequest,
+  AdminRotateTokenResponse,
+  AdminUpdateQueueItemRequest,
+  PlaybackCommand,
+  QueueItem,
+  ServerStatePayload,
+  WsInboundMessage,
+  WsOutboundMessage
+} from '@singpulse/shared/types';
 import type { FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 
 const PORT = Number(process.env.PORT || 3000);
 const CACHE_DIR = process.env.CACHE_DIR || '/app/cache';
 const FRONTEND_DIST = process.env.FRONTEND_DIST || path.resolve(import.meta.dirname, '../../frontend/dist');
-const PARTY_TOKEN = process.env.PARTY_TOKEN || randomBytes(3).toString('hex');
+// Mutable: the host can rotate the token at runtime (POST /api/admin/rotate-token)
+let PARTY_TOKEN = process.env.PARTY_TOKEN || randomBytes(3).toString('hex');
+const ADMIN_PIN = process.env.ADMIN_PIN || '1234';
+const PARTY_TOKEN_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+const PARTY_TOKEN_LENGTH = 6;
+const WS_CLOSE_TOKEN_ROTATED = 4001;
+const MAX_BAD_PINS = 10;
 const PUBLIC_REMOTE_URL = process.env.PUBLIC_REMOTE_URL || `http://localhost:${PORT}`;
 
 const PLAYBACK_ACTIONS: ReadonlySet<string> = new Set<PlaybackCommand['action']>(['toggle_pause', 'skip', 'restart', 'volume']);
@@ -72,13 +88,24 @@ await app.register(fastifyCors, {
 });
 await app.register(fastifyWebsocket, { options: { maxPayload: 4096 } });
 
-const clients = new Set<WebSocket>();
+// `tv` marks the stage receiver: the only client that is told the live party token
+const clients = new Map<WebSocket, { tv: boolean }>();
+
+function withoutToken(state: ServerStatePayload): ServerStatePayload {
+  const { partyToken: _token, ...rest } = state;
+  return rest;
+}
+
+function messageFor(msg: WsOutboundMessage, tv: boolean): string {
+  return JSON.stringify(msg.type === 'STATE_SYNC' && !tv ? withoutToken(msg) : msg);
+}
 
 function broadcast(msg: WsOutboundMessage): void {
-  const payload = JSON.stringify(msg);
-  for (const client of clients) {
+  const forTv = messageFor(msg, true);
+  const forGuests = messageFor(msg, false);
+  for (const [client, { tv }] of clients) {
     if (client.readyState === 1) {
-      client.send(payload);
+      client.send(tv ? forTv : forGuests);
     }
   }
 }
@@ -103,7 +130,8 @@ function digest(value: string): Buffer {
   return createHash('sha256').update(value).digest();
 }
 
-const PARTY_TOKEN_DIGEST = digest(PARTY_TOKEN);
+let PARTY_TOKEN_DIGEST = digest(PARTY_TOKEN);
+const ADMIN_PIN_DIGEST = digest(ADMIN_PIN);
 
 function isAuthorized(req: { ip: string; headers: Record<string, unknown>; query: Record<string, unknown> }): boolean {
   if (isTrustedLanRequest(req.ip, req.headers)) return true;
@@ -193,8 +221,10 @@ app.get('/ws', { websocket: true }, (socket, req) => {
     return;
   }
 
-  clients.add(socket);
-  socket.send(JSON.stringify(queueManager.getState()));
+  // Only a LAN receiver may claim the TV role; remote guests must hold the token anyway
+  const tv = (req.query as { role?: unknown }).role === 'tv' && isTrustedLanRequest(req.ip, req.headers);
+  clients.set(socket, { tv });
+  socket.send(messageFor(queueManager.getState(), tv));
 
   socket.on('message', (raw) => {
     const msg = parseInboundMessage(raw.toString());
@@ -287,6 +317,115 @@ app.delete('/api/queue/:id', {
   return { ok: true };
 });
 
+// 5. Host Mode (admin): party-token auth plus the host PIN on every route
+const badPinAttempts = new Map<string, { count: number; expiresAt: number }>();
+
+function pinMatches(pin: unknown): boolean {
+  return typeof pin === 'string' && pin !== '' && timingSafeEqual(digest(pin), ADMIN_PIN_DIGEST);
+}
+
+await app.register(
+  async (admin) => {
+    admin.addHook('preHandler', async (req, reply) => {
+      if (!isAuthorizedRequest(req)) return reply.code(401).send({ error: 'Unauthorized' });
+
+      const key = clientKey(req.ip, req.headers);
+      const now = Date.now();
+      let attempts = badPinAttempts.get(key);
+      if (attempts && attempts.expiresAt <= now) {
+        badPinAttempts.delete(key);
+        attempts = undefined;
+      }
+      if (attempts && attempts.count >= MAX_BAD_PINS) return reply.code(429).send({ error: 'Too many attempts' });
+
+      const bodyPin = (req.body as { pin?: unknown } | null | undefined)?.pin;
+      if (pinMatches(req.headers['x-admin-pin'] ?? bodyPin)) {
+        badPinAttempts.delete(key);
+        return;
+      }
+      if (!attempts) {
+        attempts = { count: 0, expiresAt: now + BAD_TOKEN_WINDOW_MS };
+        badPinAttempts.set(key, attempts);
+      }
+      attempts.count += 1;
+      return reply.code(401).send({ error: 'Invalid PIN' });
+    });
+
+    admin.post('/verify', async () => ({ ok: true }));
+
+    admin.post('/rotate-token', async (): Promise<AdminRotateTokenResponse> => {
+      let token = '';
+      for (let i = 0; i < PARTY_TOKEN_LENGTH; i++) token += PARTY_TOKEN_ALPHABET[randomInt(PARTY_TOKEN_ALPHABET.length)];
+      PARTY_TOKEN = token;
+      PARTY_TOKEN_DIGEST = digest(token);
+      badTokenAttempts.clear();
+      // Broadcast first: the TV learns the new token, guests get state without it
+      queueManager.setPartyToken(token);
+      for (const [socket, { tv }] of clients) {
+        if (!tv) socket.close(WS_CLOSE_TOKEN_ROTATED, 'PARTY_TOKEN_ROTATED');
+      }
+      return { partyToken: token };
+    });
+
+    admin.post('/fair-queue', {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['enabled'],
+          properties: { enabled: { type: 'boolean' }, pin: { type: 'string' } }
+        }
+      }
+    }, (req) => {
+      const { enabled } = req.body as AdminFairQueueRequest;
+      queueManager.setFairQueue(enabled);
+      return { ok: true, fairQueueEnabled: enabled };
+    });
+
+    admin.post('/queue/reorder', {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['itemId', 'toIndex'],
+          properties: {
+            itemId: { type: 'string', format: 'uuid' },
+            toIndex: { type: 'integer', minimum: 0, maximum: 10000 },
+            pin: { type: 'string' }
+          }
+        }
+      }
+    }, async (req, reply) => {
+      const { itemId, toIndex } = req.body as AdminReorderRequest;
+      if (!queueManager.reorder(itemId, toIndex)) return reply.code(404).send({ error: 'Queue item not found' });
+      return { ok: true };
+    });
+
+    admin.delete('/queue/:id', {
+      schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string', format: 'uuid' } } } }
+    }, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      if (!queueManager.remove(id)) return reply.code(404).send({ error: 'Queue item not found' });
+      return { ok: true };
+    });
+
+    admin.patch('/queue/:id', {
+      schema: {
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string', format: 'uuid' } } },
+        body: {
+          type: 'object',
+          required: ['singer'],
+          properties: { singer: { type: 'string', minLength: 1, maxLength: 32, pattern: '\\S' }, pin: { type: 'string' } }
+        }
+      }
+    }, async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const { singer } = req.body as AdminUpdateQueueItemRequest;
+      if (!queueManager.updateSinger(id, singer)) return reply.code(404).send({ error: 'Queue item not found' });
+      return { ok: true };
+    });
+  },
+  { prefix: '/api/admin' }
+);
+
 // SPA Fallback for Vue Router (/tv and /remote)
 app.setNotFoundHandler((req, reply) => {
   if (req.raw.url?.startsWith('/api') || req.raw.url?.startsWith('/media')) {
@@ -309,5 +448,6 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 await app.listen({ port: PORT, host: '0.0.0.0' });
+if (!process.env.ADMIN_PIN) app.log.warn('ADMIN_PIN is unset: Host Mode uses the default PIN 1234. Set ADMIN_PIN before exposing this server.');
 // oxlint-disable-next-line no-console -- deliberate one-time token readout for the host operator (spec §5.4)
 console.log(`SingPulse Server Active | Party Token: ${PARTY_TOKEN}`);

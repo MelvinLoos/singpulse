@@ -27,7 +27,8 @@ the constraints the spec leaves implicit.
 
 ## QR codes
 
-- Idle QR: `size=260`, `level="M"`. HUD QR: 72px (spec), `level="L"`.
+- Idle QR: `size=260`, `level="M"`. HUD QR: 8rem / 192px, `level="L"` (the spec's 72px didn't scan; see `DEVIATIONS.md`).
+  The QR must stay the largest element in its panel.
 - Always render dark modules on white with a quiet zone of at least 4 modules (padding inside the white
   card). Never apply tint, opacity, or blur to the QR itself.
 - Test that the 72px HUD QR still scans from a phone at about 2 m on a real TV, or by screenshot at

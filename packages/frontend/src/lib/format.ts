@@ -28,6 +28,17 @@ export function cleanTitle(title: string): string {
     .trim() || title;
 }
 
+/**
+ * Karaoke uploads are conventionally titled `Artist - Song`. Split on the first
+ * dash/pipe separator; without one, the whole cleaned title is the song.
+ */
+export function splitArtist(title: string): { song: string; artist: string | null } {
+  const cleaned = cleanTitle(title);
+  const match = /^(.+?)\s+[-–—|]\s+(.+)$/.exec(cleaned);
+  if (!match?.[1] || !match[2]) return { song: cleaned, artist: null };
+  return { song: match[2].trim(), artist: match[1].trim() };
+}
+
 /** `https://sing.example.com` -> `SING.EXAMPLE.COM` for compact mono readouts. */
 export function displayHost(url: string): string {
   try {

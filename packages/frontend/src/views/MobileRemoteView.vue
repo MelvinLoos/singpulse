@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import {
   Check,
   Disc3,
+  GripVertical,
+  KeyRound,
   ListMusic,
+  Lock,
   MicVocal,
   Pause,
   Pencil,
@@ -11,7 +14,9 @@ import {
   Plus,
   RotateCcw,
   RotateCw,
+  ScanLine,
   Search,
+  ShieldCheck,
   SkipForward,
   Trash2,
   Undo2,
@@ -160,6 +165,16 @@ const undoItem = ref<QueueItem | null>(null);
 
 const visibleQueue = computed(() => store.queue.filter((item) => !pendingRemovals.has(item.id)));
 
+// Host drags show the new order immediately; the server broadcast then confirms it
+const orderOverride = ref<string[] | null>(null);
+const displayQueue = computed(() => {
+  const order = orderOverride.value;
+  if (!order) return visibleQueue.value;
+  const rank = new Map(order.map((id, i) => [id, i]));
+  return visibleQueue.value.toSorted((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+});
+watch(() => store.queue, () => (orderOverride.value = null));
+
 async function commitRemoval(id: string): Promise<void> {
   const pending = pendingRemovals.get(id);
   if (!pending) return;
@@ -195,6 +210,212 @@ function undoRemoval(): void {
 function flushRemovals(): void {
   // Map iteration tolerates the deletes commitRemoval performs synchronously
   for (const id of pendingRemovals.keys()) void commitRemoval(id);
+}
+
+/* --------------------------------------------------------------- host mode */
+const pinSheet = ref<HTMLDialogElement | null>(null);
+const pinDraft = ref('');
+const pinError = ref('');
+const pinBusy = ref(false);
+
+function onHostButton(): void {
+  if (store.isAdmin) {
+    openQueueSheet();
+    return;
+  }
+  pinDraft.value = '';
+  pinError.value = '';
+  pinSheet.value?.showModal();
+}
+
+async function submitPin(): Promise<void> {
+  if (!pinDraft.value || pinBusy.value) return;
+  pinBusy.value = true;
+  pinError.value = '';
+  try {
+    if (await store.unlockAdmin(pinDraft.value)) {
+      pinSheet.value?.close();
+      announce('Host mode unlocked');
+    } else {
+      pinError.value = 'Wrong PIN';
+      pinDraft.value = '';
+      navigator.vibrate?.([30, 40, 30]);
+    }
+  } catch {
+    pinError.value = 'Host unreachable — retry';
+  } finally {
+    pinBusy.value = false;
+  }
+}
+
+function lockHost(): void {
+  store.lockAdmin();
+  queueSheet.value?.close();
+  announce('Host mode locked');
+}
+
+const hostError = ref('');
+
+async function setFairQueue(): Promise<void> {
+  hostError.value = '';
+  try {
+    await store.toggleFairQueue(!store.fairQueueEnabled);
+    announce(`Round robin fair queue ${store.fairQueueEnabled ? 'active' : 'bypassed'}`);
+  } catch {
+    hostError.value = 'Switch failed — retry';
+  }
+}
+
+// Two-tap guard: rotation kicks every guest, so the first tap only arms it
+const rotateArmed = ref(false);
+const rotateBusy = ref(false);
+const rotatedTo = ref('');
+let rotateArmTimer: ReturnType<typeof setTimeout> | null = null;
+let rotatedToTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function onRotate(): Promise<void> {
+  if (rotateBusy.value) return;
+  if (!rotateArmed.value) {
+    rotateArmed.value = true;
+    rotateArmTimer = setTimeout(() => (rotateArmed.value = false), 4000);
+    return;
+  }
+  if (rotateArmTimer) clearTimeout(rotateArmTimer);
+  rotateArmed.value = false;
+  rotateBusy.value = true;
+  hostError.value = '';
+  try {
+    rotatedTo.value = await store.rotatePartyToken();
+    navigator.vibrate?.(20);
+    announce('Party code rotated. Guests were disconnected.');
+    if (rotatedToTimer) clearTimeout(rotatedToTimer);
+    rotatedToTimer = setTimeout(() => (rotatedTo.value = ''), 10000);
+  } catch {
+    hostError.value = 'Rotation failed — retry';
+  } finally {
+    rotateBusy.value = false;
+  }
+}
+
+async function vetoItem(item: QueueItem): Promise<void> {
+  try {
+    await store.vetoSong(item.id);
+    announce(`Vetoed ${cleanTitle(item.title)}`);
+  } catch {
+    announce(`Could not veto ${cleanTitle(item.title)}`);
+  }
+}
+
+const editingSingerId = ref<string | null>(null);
+const singerDraft = ref('');
+
+function startSingerEdit(item: QueueItem): void {
+  editingSingerId.value = item.id;
+  singerDraft.value = item.singer;
+  void nextTick(() => document.getElementById('singer-edit')?.focus());
+}
+
+async function saveSingerEdit(item: QueueItem): Promise<void> {
+  const next = singerDraft.value.trim().slice(0, MAX_SINGER_NAME_LENGTH);
+  editingSingerId.value = null;
+  if (!next || next === item.singer) return;
+  try {
+    await store.renameSongSinger(item.id, next);
+    announce(`Singer renamed to ${next}`);
+  } catch {
+    announce('Could not rename singer');
+  }
+}
+
+/* Pointer-driven drag reordering: no dependency, touch-action is pinned on the grip only */
+interface DragState {
+  id: string;
+  pointerId: number;
+  from: number;
+  target: number;
+  startY: number;
+  dy: number;
+  height: number;
+  mids: number[];
+}
+const drag = ref<DragState | null>(null);
+const rowEls = new Map<string, HTMLElement>();
+
+function setRowEl(id: string, el: unknown): void {
+  if (el instanceof HTMLElement) rowEls.set(id, el);
+  else rowEls.delete(id);
+}
+
+function startDrag(event: PointerEvent, id: string, index: number): void {
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  const rects = displayQueue.value.map((item) => rowEls.get(item.id)?.getBoundingClientRect());
+  drag.value = {
+    id,
+    pointerId: event.pointerId,
+    from: index,
+    target: index,
+    startY: event.clientY,
+    dy: 0,
+    height: rects[index]?.height ?? 0,
+    mids: rects.map((r) => (r ? r.top + r.height / 2 : 0))
+  };
+  navigator.vibrate?.(10);
+}
+
+function moveDrag(event: PointerEvent): void {
+  const d = drag.value;
+  if (!d || event.pointerId !== d.pointerId) return;
+  d.dy = event.clientY - d.startY;
+  const center = (d.mids[d.from] ?? 0) + d.dy;
+  d.target = d.mids.filter((mid, i) => i !== d.from && mid < center).length;
+}
+
+function endDrag(event: PointerEvent): void {
+  const d = drag.value;
+  if (!d || event.pointerId !== d.pointerId) return;
+  drag.value = null;
+  void commitReorder(d.from, d.target);
+}
+
+function rowStyle(id: string, index: number): Record<string, string> | undefined {
+  const d = drag.value;
+  if (!d) return undefined;
+  if (id === d.id) return { transform: `translateY(${d.dy}px)`, zIndex: '1', position: 'relative' };
+  if (d.from < index && index <= d.target) return { transform: `translateY(${-d.height}px)` };
+  if (d.target <= index && index < d.from) return { transform: `translateY(${d.height}px)` };
+  return undefined;
+}
+
+function onGripKey(event: KeyboardEvent, index: number): void {
+  const step = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+  if (!step) return;
+  event.preventDefault();
+  const to = index + step;
+  if (to < 0 || to >= displayQueue.value.length) return;
+  void commitReorder(index, to).then(() => {
+    void nextTick(() => document.getElementById(`grip-${displayQueue.value[to]?.id}`)?.focus());
+  });
+}
+
+async function commitReorder(from: number, to: number): Promise<void> {
+  if (from === to) return;
+  const list = displayQueue.value;
+  const moved = list[from];
+  const anchor = list[to];
+  if (!moved || !anchor) return;
+  const ids = list.map((item) => item.id);
+  ids.splice(from, 1);
+  ids.splice(to, 0, moved.id);
+  orderOverride.value = ids;
+  // The server index is into the full queue, which may hold items pending undo
+  const serverIndex = store.queue.findIndex((item) => item.id === anchor.id);
+  try {
+    await store.reorderQueue(moved.id, serverIndex);
+    announce(`Moved ${cleanTitle(moved.title)} to position ${to + 1}`);
+  } catch {
+    orderOverride.value = null;
+    announce('Could not reorder the queue');
+  }
 }
 
 /* ------------------------------------------------------------------ sheets */
@@ -241,6 +462,7 @@ function submitNameSheet(): void {
 /* --------------------------------------------------------------- lifecycle */
 onMounted(() => {
   store.connect();
+  void store.restoreAdmin();
   window.addEventListener('pagehide', flushRemovals);
   // First run: surface the name field without focusing it (no surprise keyboard)
   editingName.value = !singerName.value;
@@ -250,6 +472,8 @@ onUnmounted(() => {
   if (debounceTimer) clearTimeout(debounceTimer);
   searchController?.abort();
   window.removeEventListener('pagehide', flushRemovals);
+  if (rotateArmTimer) clearTimeout(rotateArmTimer);
+  if (rotatedToTimer) clearTimeout(rotatedToTimer);
   flushRemovals();
 });
 
@@ -267,14 +491,27 @@ const skeletonRows = 6;
           </span>
           <span class="font-mono text-[11px] tracking-widest whitespace-nowrap text-white/70 uppercase max-[380px]:hidden">// Remote</span>
         </p>
-        <p class="flex shrink-0 items-center gap-1.5 font-mono text-[11px] tracking-widest whitespace-nowrap uppercase" role="status">
-          <span
-            class="size-1.5 rounded-full"
-            :class="store.connected ? 'bg-acid-lime' : 'bg-vinyl-amber motion-safe:animate-shimmer'"
-            aria-hidden="true"
-          />
-          <span :class="store.connected ? 'text-white/70' : 'text-vinyl-amber'">{{ store.connected ? 'LINK OK' : 'RECONNECTING' }}</span>
-        </p>
+        <div class="-my-2 flex shrink-0 items-center gap-1">
+          <p class="flex items-center gap-1.5 font-mono text-[11px] tracking-widest whitespace-nowrap uppercase" role="status">
+            <span
+              class="size-1.5 rounded-full"
+              :class="store.connected ? 'bg-acid-lime' : 'bg-vinyl-amber motion-safe:animate-shimmer'"
+              aria-hidden="true"
+            />
+            <span :class="store.connected ? 'text-white/70' : 'text-vinyl-amber'">{{ store.connected ? 'LINK OK' : 'RECONNECTING' }}</span>
+          </p>
+          <button
+            type="button"
+            class="flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-key px-2 font-mono text-[11px] font-bold tracking-widest uppercase active:translate-y-px active:bg-surface-elevated"
+            :class="store.isAdmin ? 'text-acid-lime' : 'text-white/70'"
+            :aria-label="store.isAdmin ? 'Open host controls' : 'Unlock host mode'"
+            @click="onHostButton"
+          >
+            <ShieldCheck v-if="store.isAdmin" class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" />
+            <Lock v-else class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" />
+            <span v-if="store.isAdmin" class="rounded-[2px] bg-acid-lime px-1 text-obsidian">Host</span>
+          </button>
+        </div>
       </div>
 
       <div class="mt-3 flex min-h-12 items-center gap-2 rounded-key border border-white/12 bg-surface pl-3">
@@ -538,7 +775,7 @@ const skeletonRows = 6;
           <div>
             <h2 id="queue-sheet-title" class="font-display text-2xl leading-none font-extrabold tracking-tighter uppercase">Setlist</h2>
             <p class="mt-1 font-mono text-[11px] tracking-widest text-white/70 uppercase">
-              Fair rotation // {{ String(visibleQueue.length).padStart(2, '0') }} up next
+              {{ store.fairQueueEnabled ? 'Fair rotation' : 'Arrival order' }} // {{ String(visibleQueue.length).padStart(2, '0') }} up next
             </p>
           </div>
           <button
@@ -562,13 +799,129 @@ const skeletonRows = 6;
           <StatusBadge :item="store.currentSong" />
         </div>
 
-        <ol v-if="visibleQueue.length" class="mt-1">
-          <li v-for="(item, index) in visibleQueue" :key="item.id" class="flex items-center gap-3 border-b border-white/12 py-3">
+        <!-- HOST CONTROL STRIP -->
+        <section v-if="store.isAdmin" class="mt-3 rounded-module border border-acid-lime/40 bg-obsidian" aria-label="Host controls">
+          <div class="flex items-center justify-between border-b border-white/12 px-3 py-1">
+            <p class="flex items-center gap-2 font-mono text-[11px] font-bold tracking-widest text-acid-lime uppercase">
+              <ShieldCheck class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" /> Host mode
+            </p>
+            <button
+              type="button"
+              class="flex h-11 items-center gap-1.5 px-1 font-mono text-[11px] tracking-widest text-white/70 uppercase active:text-white"
+              @click="lockHost"
+            >
+              <Lock class="size-3.5" :stroke-width="ICON_STROKE" aria-hidden="true" /> Lock
+            </button>
+          </div>
+
+          <button
+            type="button"
+            role="switch"
+            :aria-checked="store.fairQueueEnabled"
+            class="flex min-h-14 w-full items-center gap-3 border-b border-white/12 px-3 text-left active:bg-surface-elevated"
+            @click="setFairQueue"
+          >
+            <span class="min-w-0 flex-1">
+              <span class="block font-mono text-[11px] font-bold tracking-widest uppercase">Round-robin fair queue</span>
+              <span
+                class="block font-mono text-[10px] tracking-widest uppercase"
+                :class="store.fairQueueEnabled ? 'text-acid-lime' : 'text-vinyl-amber'"
+              >
+                {{ store.fairQueueEnabled ? 'Active' : 'Bypassed' }}
+              </span>
+            </span>
+            <span
+              class="relative h-7 w-12 shrink-0 rounded-[3px] border transition-colors duration-200"
+              :class="store.fairQueueEnabled ? 'border-acid-lime bg-acid-lime/15' : 'border-white/25 bg-surface'"
+              aria-hidden="true"
+            >
+              <span
+                class="absolute top-0.5 left-0.5 h-5 w-5 rounded-[2px] transition-transform duration-200 motion-reduce:transition-none"
+                :class="store.fairQueueEnabled ? 'translate-x-5 bg-acid-lime' : 'translate-x-0 bg-white/60'"
+              />
+            </span>
+          </button>
+
+          <button
+            type="button"
+            class="flex min-h-14 w-full items-center gap-3 px-3 text-left font-mono text-[11px] font-bold tracking-widest uppercase transition-colors duration-200 active:translate-y-px disabled:opacity-50"
+            :class="rotateArmed ? 'bg-neon-coral text-obsidian' : 'text-neon-coral active:bg-surface-elevated'"
+            :disabled="rotateBusy"
+            @click="onRotate"
+          >
+            <component :is="rotateArmed ? RotateCcw : KeyRound" class="size-5 shrink-0" :stroke-width="ICON_STROKE" aria-hidden="true" />
+            {{ rotateBusy ? 'Rotating' : rotateArmed ? 'Tap again to kick guests & rotate QR' : 'Rotate party code' }}
+          </button>
+
+          <p v-if="rotatedTo" class="border-t border-white/12 px-3 py-2.5 font-mono text-[11px] tracking-widest text-acid-lime uppercase" role="status">
+            New code // <span class="text-white normal-case">{{ rotatedTo }}</span> // QR updated
+          </p>
+          <p v-if="hostError" class="border-t border-white/12 px-3 py-2.5 font-mono text-[11px] tracking-widest text-neon-coral uppercase" role="alert">
+            {{ hostError }}
+          </p>
+        </section>
+
+        <ol v-if="displayQueue.length" class="mt-1">
+          <li
+            v-for="(item, index) in displayQueue"
+            :key="item.id"
+            :ref="(el) => setRowEl(item.id, el)"
+            class="flex items-center gap-3 border-b border-white/12 bg-surface py-3"
+            :class="[
+              store.isAdmin ? 'gap-2' : '',
+              drag && drag.id !== item.id ? 'motion-safe:transition-transform motion-safe:duration-150' : '',
+              drag?.id === item.id ? 'border-acid-lime/60 bg-surface-elevated' : ''
+            ]"
+            :style="rowStyle(item.id, index)"
+          >
+            <button
+              v-if="store.isAdmin"
+              :id="`grip-${item.id}`"
+              type="button"
+              class="-ml-2 grid size-11 shrink-0 touch-none place-items-center rounded-key text-white/70 select-none active:bg-surface-elevated"
+              :aria-label="`Reorder ${cleanTitle(item.title)}. Drag, or use up and down arrow keys.`"
+              @pointerdown.prevent="startDrag($event, item.id, index)"
+              @pointermove="moveDrag"
+              @pointerup="endDrag"
+              @pointercancel="drag = null"
+              @keydown="onGripKey($event, index)"
+            >
+              <GripVertical class="size-5" :stroke-width="ICON_STROKE" />
+            </button>
             <span class="w-6 shrink-0 font-mono text-xs text-white/70 tabular-nums">{{ formatIndex(index) }}</span>
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-semibold">{{ cleanTitle(item.title) }}</p>
-              <p class="mt-0.5 flex items-center gap-2">
-                <span class="truncate font-mono text-[11px] tracking-widest text-acid-lime uppercase">{{ item.singer }}</span>
+              <form
+                v-if="store.isAdmin && editingSingerId === item.id"
+                class="mt-1 flex items-center gap-1"
+                @submit.prevent="saveSingerEdit(item)"
+              >
+                <label for="singer-edit" class="sr-only">Singer name</label>
+                <input
+                  id="singer-edit"
+                  v-model="singerDraft"
+                  :maxlength="MAX_SINGER_NAME_LENGTH"
+                  class="h-11 min-w-0 flex-1 rounded-key border border-acid-lime bg-obsidian px-2 text-base font-semibold focus:outline-none"
+                  enterkeyhint="done"
+                  autocomplete="off"
+                  @keydown.esc="editingSingerId = null"
+                />
+                <button type="submit" class="grid size-11 shrink-0 place-items-center text-acid-lime" aria-label="Save singer name">
+                  <Check class="size-5" :stroke-width="ICON_STROKE" />
+                </button>
+              </form>
+              <p v-else class="mt-0.5 flex items-center gap-2">
+                <button
+                  v-if="store.isAdmin"
+                  type="button"
+                  class="-my-2.5 flex min-h-11 min-w-0 items-center gap-1.5 font-mono text-[11px] tracking-widest text-acid-lime uppercase"
+                  :aria-label="`Rename singer ${item.singer}`"
+                  @click="startSingerEdit(item)"
+                >
+                  <span class="truncate">{{ item.singer }}</span>
+                  <Pencil class="size-3 shrink-0" :stroke-width="ICON_STROKE" aria-hidden="true" />
+                </button>
+                <span v-else class="truncate font-mono text-[11px] tracking-widest text-acid-lime uppercase">{{ item.singer }}</span>
                 <StatusBadge :item="item" />
               </p>
               <p v-if="item.status === 'error' && item.errorMessage" class="mt-1 truncate font-mono text-[10px] tracking-wider text-neon-coral uppercase">
@@ -576,6 +929,16 @@ const skeletonRows = 6;
               </p>
             </div>
             <button
+              v-if="store.isAdmin"
+              type="button"
+              class="ml-1 grid size-11 shrink-0 place-items-center rounded-key border border-neon-coral/60 text-neon-coral active:translate-y-px active:bg-neon-coral active:text-obsidian"
+              :aria-label="`Veto ${cleanTitle(item.title)}`"
+              @click="vetoItem(item)"
+            >
+              <Trash2 class="size-4" :stroke-width="ICON_STROKE" />
+            </button>
+            <button
+              v-else
               type="button"
               class="ml-2 grid size-11 shrink-0 place-items-center rounded-key border border-white/12 text-neon-coral active:translate-y-px active:bg-surface-elevated"
               :aria-label="`Remove ${cleanTitle(item.title)}`"
@@ -644,6 +1007,71 @@ const skeletonRows = 6;
         </div>
       </form>
     </dialog>
+
+    <!-- HOST PIN -->
+    <dialog
+      ref="pinSheet"
+      closedby="any"
+      aria-labelledby="pin-sheet-title"
+      class="fixed inset-x-0 top-auto bottom-0 m-0 w-full max-w-none rounded-t-[6px] border-t border-white/12 bg-surface p-0 text-white transition-transform duration-300 ease-out motion-reduce:transition-none starting:open:translate-y-full"
+      @click="onSheetClick"
+    >
+      <form class="px-safe pt-5 pb-safe" @submit.prevent="submitPin">
+        <p class="font-mono text-[11px] tracking-widest text-white/70 uppercase">Restricted // Host only</p>
+        <h2 id="pin-sheet-title" class="mt-1 font-display text-3xl leading-none font-extrabold tracking-tighter uppercase">
+          Host <span class="text-acid-lime">PIN</span>
+        </h2>
+        <label for="host-pin" class="mt-5 block font-mono text-[11px] tracking-widest text-white/70 uppercase">Unlocks queue control + party code</label>
+        <input
+          id="host-pin"
+          v-model="pinDraft"
+          type="password"
+          inputmode="numeric"
+          maxlength="32"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          enterkeyhint="go"
+          autofocus
+          class="mt-2 h-14 w-full rounded-key border bg-obsidian px-3 text-center font-mono text-2xl tracking-[0.5em] focus:outline-none"
+          :class="pinError ? 'border-neon-coral' : 'border-white/12 focus:border-acid-lime'"
+        />
+        <p class="mt-2 min-h-5 font-mono text-[11px] tracking-widest text-neon-coral uppercase" role="alert">{{ pinError }}</p>
+        <div class="mt-2 mb-1 grid grid-cols-[auto_1fr] gap-2">
+          <button
+            type="button"
+            class="h-12 rounded-key border border-white/12 px-4 font-mono text-[11px] font-bold tracking-widest uppercase active:translate-y-px active:bg-surface-elevated"
+            @click="pinSheet?.close()"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            class="h-12 rounded-key bg-acid-lime font-mono text-[11px] font-bold tracking-widest text-obsidian uppercase active:translate-y-px active:brightness-90 disabled:bg-surface-elevated disabled:text-white/35"
+            :disabled="!pinDraft || pinBusy"
+          >
+            {{ pinBusy ? 'Checking' : 'Unlock' }}
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- SESSION RESET: the party token was rotated (or is dead); retrying cannot help -->
+    <div
+      v-if="store.tokenExpired"
+      class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-obsidian px-safe text-center"
+      role="alertdialog"
+      aria-labelledby="reset-title"
+    >
+      <ScanLine class="size-12 text-neon-coral" :stroke-width="1.5" aria-hidden="true" />
+      <p class="mt-6 font-mono text-[11px] tracking-widest text-neon-coral uppercase">Link closed // Code rotated</p>
+      <h2 id="reset-title" class="mt-2 font-display text-4xl leading-[0.9] font-extrabold tracking-tighter uppercase">
+        Session <span class="text-acid-lime">reset</span>
+      </h2>
+      <p class="mt-4 max-w-xs font-mono text-xs leading-relaxed tracking-widest text-white/70 uppercase">
+        Scan the TV QR code to rejoin
+      </p>
+    </div>
 
     <p class="sr-only" aria-live="polite">{{ announcement }}</p>
   </div>

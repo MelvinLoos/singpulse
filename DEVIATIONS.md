@@ -59,6 +59,7 @@ fixes a real bug, a toolchain incompatibility or a stated requirement the refere
 | Socket handlers use `addEventListener` instead of `onopen = …` | oxlint `prefer-add-event-listener`; same behaviour. |
 | `registerCommandHandler` accepts `null`; the store also exposes `remoteBaseUrl` | Lets the TV view unregister on unmount, and lets the QR module show the join host. |
 | TV: if the browser rejects unmuted autoplay, playback retries muted and shows `SOUND OFF // PRESS OK TO UNMUTE` | `MainActivity` unlocks autoplay inside the APK, but `/tv` opened in an ordinary browser (a laptop on HDMI) would otherwise stall silently while showing ON AIR. |
+| TV playback HUD split in two: now playing (status, singer, song, artist) in the lower left, next mic + join QR in the upper right. Both panels are 55 % obsidian glass. The HUD QR is 8rem (192px at 1080p) instead of 72px | The single opaque panel covered the karaoke lyrics. At 72px a join URL's modules are under 2px each, too small to scan from the couch. The artist comes from splitting the conventional `Artist - Song` upload title (`splitArtist`), since `QueueItem` has no artist field. |
 | TV `@ended` / `@error` call small handler functions | Same behaviour as the inline `store.notifySongEnded(store.currentSong.id)`, but type-safe when `currentSong` changes between render and event. |
 
 ## Container & deployment (§7)
@@ -84,3 +85,13 @@ fixes a real bug, a toolchain incompatibility or a stated requirement the refere
 | APK workflow: `permissions: contents: read`, `pnpm exec cap`, `--frozen-lockfile`, `if-no-files-found: error` | Least privilege (uploading an artifact needs no write access). `pnpm exec` uses the pinned Capacitor CLI. A missing APK now fails the build. |
 | New `ci.yml` (lint, typecheck, test, native-TS check, build) on pull requests and on `main` | Quality gate before merge; the spec's workflows only run after code lands on `main`. |
 | Concurrency groups on all workflows | Cancel superseded runs. |
+
+## Host Mode (admin controls)
+
+| Change | Why |
+| --- | --- |
+| `STATE_SYNC.partyToken` is optional and only sent to sockets that connect with `role=tv` from a trusted LAN address; `?role=tv` is appended by `TvPlayerView` | Broadcasting the live token to every client would hand a kicked guest the new token the moment a rotation happens. Guests and the host keep the token they hold; the host receives the new one in the `rotate-token` response. |
+| `/api/admin/*` needs both the party token and `x-admin-pin` (header, or `pin` in the body); 10 wrong PINs per 15 min per client answers 429 | The 4-digit default PIN is brute-forceable without a limit. Admin routes must not be reachable by a mere LAN-trusted guest without the PIN. |
+| `ADMIN_PIN` falls back to `1234`; compose uses `${ADMIN_PIN:-1234}` | Requested default for dev. Set your own for any internet-facing tunnel. |
+| Rotation closes every non-TV socket (including the host's); the host store reconnects itself with the new token | Matches the requested close code `4001` / `PARTY_TOKEN_ROTATED`. LAN-trusted clients need no token, so they rejoin immediately after a rotation. |
+| Close-code constants are not in `@singpulse/shared` | Shared is type-only (value imports from `node_modules` crash under native TS stripping). |

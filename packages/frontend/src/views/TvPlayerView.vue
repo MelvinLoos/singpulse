@@ -5,7 +5,7 @@ import { Radio, TriangleAlert } from 'lucide-vue-next';
 import type { PlaybackCommand, QueueItem } from '@singpulse/shared/types';
 import { useKaraokeStore } from '../stores/karaoke.ts';
 import { STATUS_META, TONE_TEXT } from '../lib/status.ts';
-import { cleanTitle, displayHost, formatDuration, formatIndex, formatTimecode } from '../lib/format.ts';
+import { cleanTitle, displayHost, formatDuration, formatIndex, formatTimecode, splitArtist } from '../lib/format.ts';
 import SegmentBar from '../components/SegmentBar.vue';
 import EqualizerBadge from '../components/EqualizerBadge.vue';
 
@@ -16,9 +16,23 @@ const FLASH_DURATION_MS = 6000;
 const store = useKaraokeStore();
 const videoEl = ref<HTMLVideoElement | null>(null);
 
+// A rotated party token re-renders the QR; pulse its frame so the room notices
+const qrPulse = ref(false);
+let qrPulseTimer: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => store.partyToken,
+  (next, prev) => {
+    if (!prev || !next) return; // first sync is not a rotation
+    qrPulse.value = true;
+    if (qrPulseTimer) clearTimeout(qrPulseTimer);
+    qrPulseTimer = setTimeout(() => (qrPulse.value = false), 2500);
+  }
+);
+
 const upcoming = computed(() => store.queue.slice(0, 4));
 const nextUp = computed(() => store.queue.find((item) => item.status !== 'error') ?? null);
 const joinHost = computed(() => `${displayHost(store.remoteBaseUrl)}/REMOTE`);
+const nowPlaying = computed(() => (store.currentSong ? splitArtist(store.currentSong.title) : null));
 
 // Playback clock for the HUD timecode
 const elapsed = ref(0);
@@ -175,13 +189,14 @@ onMounted(() => {
   document.documentElement.classList.add('tv-mode');
   store.registerCommandHandler(handleCommand);
   window.addEventListener('keydown', onKeydown);
-  store.connect();
+  store.connect('tv');
 });
 
 onUnmounted(() => {
   document.documentElement.classList.remove('tv-mode');
   store.registerCommandHandler(null);
   window.removeEventListener('keydown', onKeydown);
+  if (qrPulseTimer) clearTimeout(qrPulseTimer);
   for (const timer of timers) clearTimeout(timer);
   timers.clear();
 });
@@ -206,44 +221,54 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
         @loadedmetadata="onTimeUpdate"
       />
 
-      <aside
-        class="hud-glass absolute top-[2.25rem] right-[4rem] w-[25rem] rounded-module border border-white/15 bg-obsidian/85 backdrop-blur-md"
+      <!-- Lower left: who is singing what. Narrow and light so the video's lyrics stay readable. -->
+      <section
+        class="hud-glass absolute bottom-[2.25rem] left-[4rem] w-max max-w-[26rem] rounded-module border border-white/10 bg-obsidian/55 backdrop-blur-md"
         aria-label="Now playing"
       >
-        <div class="flex items-center justify-between border-b border-white/15 px-5 py-3 font-mono text-sm tracking-widest uppercase">
-          <span class="flex items-center gap-3" :class="store.isPaused ? 'text-vinyl-amber' : 'text-acid-lime'">
-            <EqualizerBadge :active="!store.isPaused" class="text-[1.1rem]" :class="store.isPaused ? 'text-vinyl-amber' : ''" />
-            {{ store.isPaused ? 'PAUSED' : 'ON AIR' }}
-          </span>
-          <span class="text-white/70 tabular-nums">{{ formatTimecode(elapsed) }} / {{ formatDuration(total) }}</span>
-        </div>
-
         <p
           v-if="soundBlocked"
-          class="border-b border-white/15 bg-vinyl-amber px-5 py-2 font-mono text-sm font-bold tracking-widest text-obsidian uppercase"
+          class="rounded-t-module bg-vinyl-amber px-4 py-1.5 font-mono text-sm font-bold tracking-widest text-obsidian uppercase"
           role="status"
         >
           SOUND OFF // PRESS OK TO UNMUTE
         </p>
 
-        <div class="px-5 pt-4 pb-5">
-          <p class="font-display text-[2.5rem] leading-none font-extrabold tracking-tighter text-acid-lime uppercase truncate">
+        <div class="px-4 pt-3 pb-3.5">
+          <p class="flex items-center gap-3 font-mono text-sm tracking-widest uppercase" :class="store.isPaused ? 'text-vinyl-amber' : 'text-acid-lime'">
+            <EqualizerBadge :active="!store.isPaused" class="text-[1.1rem]" :class="store.isPaused ? 'text-vinyl-amber' : ''" />
+            {{ store.isPaused ? 'PAUSED' : 'ON AIR' }}
+            <span class="text-white/70 tabular-nums">{{ formatTimecode(elapsed) }} / {{ formatDuration(total) }}</span>
+          </p>
+          <p class="mt-1.5 truncate font-display text-[2rem] leading-none font-extrabold tracking-tighter text-acid-lime uppercase">
             {{ store.currentSong.singer }}
           </p>
-          <p class="mt-2 truncate text-[1.25rem] leading-snug text-white/80">{{ cleanTitle(store.currentSong.title) }}</p>
+          <p class="mt-1.5 truncate text-[1.25rem] leading-snug font-semibold">{{ nowPlaying?.song }}</p>
+          <p v-if="nowPlaying?.artist" class="truncate font-mono text-sm tracking-widest text-white/80 uppercase">
+            {{ nowPlaying.artist }}
+          </p>
         </div>
+      </section>
 
-        <div class="flex items-center gap-4 border-t border-white/15 px-5 py-4">
-          <div class="min-w-0 flex-1">
-            <p class="font-mono text-sm tracking-widest text-white/70 uppercase">NEXT MIC</p>
-            <p class="mt-1 truncate text-[1.25rem] font-semibold">{{ nextUp?.singer ?? 'OPEN MIC' }}</p>
-            <p class="truncate font-mono text-sm tracking-widest uppercase" :class="nextUp ? TONE_TEXT[STATUS_META[nextUp.status].tone] : 'text-white/70'">
-              {{ nextUp ? STATUS_META[nextUp.status].tv : 'SCAN TO QUEUE' }}
+      <!-- Upper right: join + next mic. The QR dominates so it scans from across the room. -->
+      <aside
+        class="hud-glass absolute top-[2.25rem] right-[4rem] flex items-stretch gap-4 rounded-module border border-white/10 bg-obsidian/55 p-3 backdrop-blur-md"
+        aria-label="Join the party"
+      >
+        <div class="flex w-[9rem] flex-col justify-between py-1 font-mono text-sm tracking-widest uppercase">
+          <div class="min-w-0">
+            <p class="text-white/70">NEXT MIC</p>
+            <p class="truncate font-sans text-[1.25rem] leading-tight font-semibold tracking-normal normal-case">
+              {{ nextUp?.singer ?? 'Open mic' }}
+            </p>
+            <p v-if="nextUp" class="truncate" :class="TONE_TEXT[STATUS_META[nextUp.status].tone]">
+              {{ STATUS_META[nextUp.status].tv }}
             </p>
           </div>
-          <div class="size-[3rem] shrink-0 overflow-hidden rounded-module bg-white [&>svg]:size-full">
-            <QrcodeVue :value="store.qrJoinUrl" :size="72" level="L" render-as="svg" :margin="4" />
-          </div>
+          <p class="text-acid-lime">SCAN<br />TO SING</p>
+        </div>
+        <div class="size-[8rem] shrink-0 overflow-hidden rounded-module bg-white transition-shadow duration-500 [&>svg]:size-full" :class="qrPulse ? 'ring-4 ring-acid-lime' : 'ring-0 ring-transparent'">
+          <QrcodeVue :value="store.qrJoinUrl" :size="192" level="L" render-as="svg" :margin="4" />
         </div>
       </aside>
     </template>
@@ -331,7 +356,7 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
             </div>
 
             <div class="px-7 pt-6 pb-6">
-              <div class="mx-auto size-[13rem] overflow-hidden rounded-module bg-white [&>svg]:size-full">
+              <div class="mx-auto size-[13rem] overflow-hidden rounded-module bg-white transition-shadow duration-500 [&>svg]:size-full" :class="qrPulse ? 'ring-4 ring-acid-lime' : 'ring-0 ring-transparent'">
                 <QrcodeVue :value="store.qrJoinUrl" :size="260" level="M" render-as="svg" :margin="4" />
               </div>
               <p class="mt-5 text-center font-display text-[1.75rem] leading-none font-extrabold tracking-tighter whitespace-nowrap uppercase">
