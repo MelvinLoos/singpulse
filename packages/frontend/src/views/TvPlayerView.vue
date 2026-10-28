@@ -42,7 +42,6 @@ const wallLayout = [
   'left-[11rem] top-[0.5rem]',
   'left-[16.5rem] top-[3.5rem]'
 ];
-const nextUp = computed(() => store.queue.find((item) => item.status !== 'error') ?? null);
 const joinHost = computed(() => `${displayHost(store.remoteBaseUrl)}/REMOTE`);
 const nowPlaying = computed(() => (store.currentSong ? splitArtist(store.currentSong.title) : null));
 
@@ -239,9 +238,9 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
         @loadedmetadata="onTimeUpdate"
       />
 
-      <!-- Lower left: who is singing what. Narrow and light so the video's lyrics stay readable. -->
+      <!-- Lower left: who is singing what. A thin single-row bar so the video's lyrics stay readable. -->
       <section
-        class="hud-glass absolute bottom-[2.25rem] left-[4rem] w-max max-w-[26rem] rounded-module border border-white/10 bg-obsidian/55 backdrop-blur-md"
+        class="hud-glass absolute bottom-[2.25rem] left-[4rem] w-max max-w-[min(56rem,calc(100%-8rem))] rounded-module border border-white/10 bg-obsidian/55 backdrop-blur-md"
         aria-label="Now playing"
       >
         <p
@@ -252,42 +251,33 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
           SOUND OFF // PRESS OK TO UNMUTE
         </p>
 
-        <div class="px-4 pt-3 pb-3.5">
-          <p class="flex items-center gap-3 font-mono text-sm tracking-widest uppercase" :class="store.isPaused ? 'text-vinyl-amber' : 'text-acid-lime'">
+        <div class="flex items-center gap-4 px-4 py-2">
+          <p class="flex shrink-0 items-center gap-3 font-mono text-sm tracking-widest uppercase" :class="store.isPaused ? 'text-vinyl-amber' : 'text-acid-lime'">
             <EqualizerBadge :active="!store.isPaused" class="text-[1.1rem]" :class="store.isPaused ? 'text-vinyl-amber' : ''" />
             {{ store.isPaused ? 'PAUSED' : 'ON AIR' }}
             <span class="text-white/70 tabular-nums">{{ formatTimecode(elapsed) }} / {{ formatDuration(total) }}</span>
           </p>
-          <p class="mt-1.5 truncate font-display text-[2rem] leading-none font-extrabold tracking-tighter text-acid-lime uppercase">
+          <span class="w-px self-stretch bg-white/15" aria-hidden="true" />
+          <p class="max-w-[16rem] shrink-0 truncate font-display text-[1.5rem] leading-none font-extrabold tracking-tighter text-acid-lime uppercase">
             {{ store.currentSong.singer }}
           </p>
-          <p class="mt-1.5 truncate text-[1.25rem] leading-snug font-semibold">{{ nowPlaying?.song }}</p>
-          <p v-if="nowPlaying?.artist" class="truncate font-mono text-sm tracking-widest text-white/80 uppercase">
-            {{ nowPlaying.artist }}
+          <span class="w-px self-stretch bg-white/15" aria-hidden="true" />
+          <p class="min-w-0 truncate">
+            <span class="text-[1.125rem] font-semibold">{{ nowPlaying?.song }}</span>
+            <span v-if="nowPlaying?.artist" class="font-mono text-sm tracking-widest text-white/80 uppercase"> // {{ nowPlaying.artist }}</span>
           </p>
         </div>
       </section>
 
-      <!-- Upper right: join + next mic. The QR dominates so it scans from across the room. -->
+      <!-- Upper right: just the join QR, kept large enough to scan from across the room. -->
       <aside
-        class="hud-glass absolute top-[2.25rem] right-[4rem] flex items-stretch gap-4 rounded-module border border-white/10 bg-obsidian/55 p-3 backdrop-blur-md"
+        class="hud-glass absolute top-[2.25rem] right-[4rem] flex flex-col items-center gap-1.5 rounded-module border border-white/10 bg-obsidian/55 p-2 backdrop-blur-md"
         aria-label="Join the party"
       >
-        <div class="flex w-[9rem] flex-col justify-between py-1 font-mono text-sm tracking-widest uppercase">
-          <div class="min-w-0">
-            <p class="text-white/70">NEXT MIC</p>
-            <p class="truncate font-sans text-[1.25rem] leading-tight font-semibold tracking-normal normal-case">
-              {{ nextUp?.singer ?? 'Open mic' }}
-            </p>
-            <p v-if="nextUp" class="truncate" :class="TONE_TEXT[STATUS_META[nextUp.status].tone]">
-              {{ STATUS_META[nextUp.status].tv }}
-            </p>
-          </div>
-          <p class="text-acid-lime">SCAN<br />TO SING</p>
-        </div>
         <div class="size-[8rem] shrink-0 overflow-hidden rounded-module bg-white transition-shadow duration-500 [&>svg]:size-full" :class="qrPulse ? 'ring-4 ring-acid-lime' : 'ring-0 ring-transparent'">
           <QrcodeVue :value="store.qrJoinUrl" :size="192" level="L" render-as="svg" :margin="4" />
         </div>
+        <p class="font-mono text-sm tracking-widest text-acid-lime uppercase">Join Now</p>
       </aside>
     </template>
 
