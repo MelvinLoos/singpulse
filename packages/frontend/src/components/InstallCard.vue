@@ -20,13 +20,13 @@ const mode = computed<'prompt' | 'ios' | null>(() => {
   >
     <Download class="size-4 shrink-0 text-acid-lime" :stroke-width="ICON_STROKE" aria-hidden="true" />
     <template v-if="mode === 'prompt'">
-      <p class="min-w-0 flex-1 font-mono text-[11px] tracking-widest text-white/70 uppercase">Keep SingPulse on your home screen</p>
+      <p class="min-w-0 flex-1 font-mono text-[11px] tracking-widest text-white/70 uppercase">Add to home screen</p>
       <button
         type="button"
         class="h-11 shrink-0 rounded-key bg-acid-lime px-3 font-mono text-[11px] font-bold tracking-widest text-obsidian uppercase active:translate-y-px active:brightness-90"
         @click="promptInstall"
       >
-        Install remote
+        Install
       </button>
     </template>
     <p v-else class="min-w-0 flex-1 font-mono text-[11px] tracking-widest text-white/70 uppercase">

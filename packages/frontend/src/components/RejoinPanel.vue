@@ -76,7 +76,7 @@ async function startScan(): Promise<void> {
     }, SCAN_INTERVAL_MS);
   } catch {
     stopScan();
-    scanError.value = 'Camera blocked — type the code instead';
+    scanError.value = 'Camera blocked';
   }
 }
 
@@ -91,14 +91,14 @@ onUnmounted(stopScan);
   >
     <div class="flex flex-1 flex-col justify-center py-6">
       <ScanLine class="size-9 text-neon-coral short:hidden" :stroke-width="1.5" aria-hidden="true" />
-      <p class="mt-4 font-mono text-[11px] tracking-widest text-neon-coral uppercase short:mt-0">Link closed // Code rotated</p>
+      <p class="mt-4 font-mono text-[11px] tracking-widest text-neon-coral uppercase short:mt-0">Code changed</p>
       <h2 id="reset-title" class="mt-2 font-display text-4xl leading-[0.9] font-extrabold tracking-tighter uppercase short:text-3xl">
         Session <span class="text-acid-lime">reset</span>
       </h2>
 
       <form class="mt-6" @submit.prevent="submit">
         <label for="rejoin-code" class="block font-mono text-[11px] tracking-widest text-white/70 uppercase">
-          Type the code shown on the TV
+          Code from TV
         </label>
         <input
           id="rejoin-code"
@@ -114,7 +114,7 @@ onUnmounted(stopScan);
           :class="failed ? 'border-neon-coral' : 'border-white/12 focus:border-acid-lime'"
         />
         <p class="mt-2 min-h-5 font-mono text-[11px] tracking-widest text-neon-coral uppercase" role="alert">
-          {{ failed ? 'Code rejected // check the TV' : scanError }}
+          {{ failed ? 'Wrong code' : scanError }}
         </p>
         <button
           type="submit"

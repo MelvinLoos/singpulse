@@ -51,7 +51,7 @@ function pick(key: (typeof SUPERLATIVES)[number]['key']): void {
 
       <header class="mt-3">
         <p class="flex items-center justify-between gap-3 font-mono text-[11px] tracking-widest uppercase">
-          <span id="vote-title" class="min-w-0 truncate text-acid-lime">RATE PERFORMANCE // {{ vote.singer }}</span>
+          <span id="vote-title" class="min-w-0 truncate text-acid-lime">RATE // {{ vote.singer }}</span>
           <span class="shrink-0 text-white/70 tabular-nums">{{ locked ? 'LOCKED' : `00:${seconds}` }}</span>
         </p>
         <div class="mt-2 h-1.5 bg-white/12" aria-hidden="true">
@@ -92,7 +92,7 @@ function pick(key: (typeof SUPERLATIVES)[number]['key']): void {
       </div>
 
       <p class="mt-3 pb-1 text-center font-mono text-[11px] tracking-widest text-white/70 uppercase" role="status">
-        {{ locked ? 'RESULTS ON TV' : mine ? 'VOTE LOGGED // TAP TO CHANGE' : 'TAP A SCORE TO VOTE' }}
+        {{ locked ? 'RESULTS ON TV' : mine ? 'VOTED' : '' }}
       </p>
     </section>
   </div>

@@ -71,11 +71,10 @@ watch(phase, (next, prev) => {
       <p class="flex items-center justify-between gap-6 font-mono text-[1.25rem] tracking-widest uppercase">
         <template v-if="phase === 'LOBBY'">
           <span class="text-acid-lime">TRIVIA BLITZ // LOBBY</span>
-          <span class="text-white/70">{{ pad2(game.players.length) }} PLAYERS IN</span>
+          <span class="text-white/70">{{ pad2(game.players.length) }} PLAYERS</span>
         </template>
         <template v-else-if="phase === 'PODIUM'">
-          <span class="text-acid-lime">TRIVIA BLITZ // FINAL RESULTS</span>
-          <span class="text-white/70">BACK TO KARAOKE SOON</span>
+          <span class="text-acid-lime">TRIVIA BLITZ // RESULTS</span>
         </template>
         <template v-else>
           <span class="text-white">ROUND {{ pad2(game.roundIndex + 1) }} / {{ pad2(game.totalRounds) }}</span>
@@ -121,7 +120,7 @@ watch(phase, (next, prev) => {
             {{ p.name }}
           </li>
           <li v-if="!game.players.length" class="font-mono text-[1.25rem] tracking-widest text-white/70 uppercase">
-            WAITING FOR THE FIRST PLAYER...
+            NO PLAYERS YET
           </li>
         </ul>
       </template>
@@ -176,7 +175,7 @@ watch(phase, (next, prev) => {
         <template v-if="phase === 'QUESTION'">
           <p class="font-mono text-[1.5rem] tracking-widest uppercase">
             <span class="text-acid-lime tabular-nums">{{ game.lockedInCount }} / {{ game.players.length }}</span>
-            PLAYERS LOCKED IN
+            LOCKED IN
           </p>
           <ul class="mt-3 flex flex-wrap gap-2">
             <li
@@ -195,7 +194,7 @@ watch(phase, (next, prev) => {
           <p class="flex items-center gap-3 font-mono text-[1.5rem] tracking-widest uppercase">
             <Zap class="size-[1.2em] text-acid-lime" :stroke-width="ICON_STROKE" aria-hidden="true" />
             <template v-if="game.roundFastestPlayerName">
-              FASTEST FINGER: <span class="text-acid-lime">{{ game.roundFastestPlayerName }}</span>
+              FASTEST: <span class="text-acid-lime">{{ game.roundFastestPlayerName }}</span>
             </template>
             <template v-else>NOBODY GOT IT</template>
           </p>
@@ -216,7 +215,7 @@ watch(phase, (next, prev) => {
         </template>
 
         <p v-else-if="phase === 'LOBBY'" class="font-mono text-[1.25rem] tracking-widest text-white/70 uppercase">
-          HOST STARTS THE GAME FROM THEIR PHONE // KARAOKE RESUMES AFTERWARDS
+          WAITING FOR HOST
         </p>
       </div>
 

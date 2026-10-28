@@ -54,11 +54,11 @@ coding.
   `--color-status-ready: var(--color-acid-lime);`.
 - Keep the status → visual mapping identical on TV and mobile:
 
-  | `SongStatus` | Label (TV / mobile) | Treatment |
+  | `SongStatus` | Label | Treatment |
   |---|---|---|
   | `queued` | `QUEUED` | white/50 outline, empty segments |
-  | `downloading` | `BUFFERING STREAM` / `FETCHING` | vinyl-amber, segments fill from `progress` |
-  | `ready` | `READY` / `LOCKED IN` | acid-lime, all segments solid |
+  | `downloading` | `LOADING` | vinyl-amber, segments fill from `progress` |
+  | `ready` | `READY` | acid-lime, all segments solid |
   | `playing` | `ON AIR` | acid-lime + equalizer |
   | `error` | `FAILED` + `errorMessage` | neon-coral |
 
@@ -97,11 +97,11 @@ Check this by blocking fonts.googleapis.com in a Playwright screenshot once.
 
 ## Copy
 
-- Use the spec's labels verbatim: `SINGPULSE // STAGE RECEIVER`, `ONLINE // TOKEN: …`,
-  `UPCOMING SETLIST`, `NEXT MIC`, `QUEUE`/`QUEUED`, `QUEUED`/`FETCHING`/`LOCKED IN`.
-- New strings follow the same terse hardware-readout voice. Errors say what happened and what to do
-  ("SEARCH OFFLINE — RETRY IN A MOMENT" is fine; "Oops! Something went wrong" is not).
-- Empty states invite action ("NO TRACKS YET. SCAN TO DROP THE FIRST ONE.").
+- Every string names a control, reports state, or says what to do. No taglines, no eyebrows that
+  restate a heading, no hints that repeat a nearby button.
+- Keep the terse hardware-readout voice. Errors say what failed ("SEARCH FAILED"); add an action only
+  when no button already offers it. "Oops! Something went wrong" is not allowed.
+- Empty states are one short phrase ("QUEUE EMPTY").
 
 ## Self-critique loop
 

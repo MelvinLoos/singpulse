@@ -3,18 +3,17 @@ import type { QueueItem, SongStatus } from '@singpulse/shared/types';
 export type StatusTone = 'idle' | 'busy' | 'ready' | 'fault';
 
 interface StatusMeta {
-  tv: string;
-  remote: string;
+  label: string;
   tone: StatusTone;
 }
 
 // One status vocabulary for both surfaces (see singpulse-design-language skill).
 export const STATUS_META: Record<SongStatus, StatusMeta> = {
-  queued: { tv: 'QUEUED', remote: 'QUEUED', tone: 'idle' },
-  downloading: { tv: 'BUFFERING STREAM', remote: 'FETCHING', tone: 'busy' },
-  ready: { tv: 'READY', remote: 'LOCKED IN', tone: 'ready' },
-  playing: { tv: 'ON AIR', remote: 'ON AIR', tone: 'ready' },
-  error: { tv: 'FAILED', remote: 'FAILED', tone: 'fault' }
+  queued: { label: 'QUEUED', tone: 'idle' },
+  downloading: { label: 'LOADING', tone: 'busy' },
+  ready: { label: 'READY', tone: 'ready' },
+  playing: { label: 'ON AIR', tone: 'ready' },
+  error: { label: 'FAILED', tone: 'fault' }
 };
 
 export const TONE_TEXT: Record<StatusTone, string> = {

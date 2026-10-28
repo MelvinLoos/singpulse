@@ -59,7 +59,7 @@ covers the execution details.
   - a focus trap, Esc and backdrop-tap to close, and focus returned to the toggle
   - a visible grab handle, with body scroll locked while it's open
 - Queue rows show the fair-rotation order with mono indices (`01`, `02`), singer, title, and a status
-  badge (`QUEUED` / `FETCHING` / `LOCKED IN`, mapping in `singpulse-design-language`). Removal uses
+  badge (`QUEUED` / `LOADING` / `READY`, mapping in `singpulse-design-language`). Removal uses
   `Trash2`, and should offer an undo.
 
 ## Connection

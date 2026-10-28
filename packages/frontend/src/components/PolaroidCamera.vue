@@ -54,7 +54,7 @@ async function startStream(): Promise<void> {
   stopStream();
   cameraError.value = '';
   if (!hasLiveCamera.value) {
-    cameraError.value = 'LIVE CAMERA NEEDS A SECURE LINK // USE YOUR PHOTO APP';
+    cameraError.value = 'CAMERA UNAVAILABLE';
     return;
   }
   try {
@@ -77,7 +77,7 @@ async function startStream(): Promise<void> {
   } catch (err) {
     stopStream();
     const denied = err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
-    cameraError.value = denied ? 'CAMERA BLOCKED // ALLOW ACCESS OR USE YOUR PHOTO APP' : 'NO CAMERA FOUND // USE YOUR PHOTO APP';
+    cameraError.value = denied ? 'CAMERA BLOCKED' : 'NO CAMERA';
   }
 }
 
@@ -145,7 +145,7 @@ function snap(): void {
   canvas.toBlob(
     (blob) => {
       if (blob) showReview(new File([blob], 'polaroid.jpg', { type: 'image/jpeg' }));
-      else cameraError.value = 'CAPTURE FAILED // TRY AGAIN';
+      else cameraError.value = 'CAPTURE FAILED';
     },
     'image/jpeg',
     0.9
@@ -184,15 +184,15 @@ async function send(): Promise<void> {
   try {
     await store.sendPolaroid(file.value, caption.value, singerName.value || undefined);
     navigator.vibrate?.(10);
-    emit('announce', 'Photo beamed to the TV');
+    emit('announce', 'Photo sent');
     startCooldown(COOLDOWN_S);
     cameraDialog.value?.close();
   } catch (err) {
     if (err instanceof PolaroidCooldownError) {
       startCooldown(err.retryAfterSeconds);
-      error.value = 'PRINTER COOLING DOWN // TRY AGAIN SOON';
+      error.value = 'TOO SOON — WAIT';
     } else {
-      error.value = 'BEAM FAILED // CHECK LINK AND RETRY';
+      error.value = 'SEND FAILED';
     }
   } finally {
     busy.value = false;
@@ -249,7 +249,7 @@ defineExpose({ openWall });
     <div class="flex h-full flex-col px-safe pt-safe pb-safe">
       <header class="flex items-center justify-between gap-3">
         <h2 id="camera-title" class="font-mono text-[11px] tracking-widest text-acid-lime uppercase">
-          {{ step === 'live' ? 'Photo bomb // Frame it' : 'Photo bomb // Add a stamp' }}
+          {{ step === 'live' ? 'Photo' : 'Caption' }}
         </h2>
         <button
           type="button"
@@ -310,7 +310,7 @@ defineExpose({ openWall });
         </div>
 
         <p class="mt-3 text-center font-mono text-[11px] tracking-widest text-white/70 uppercase" role="status">
-          {{ cooldown ? `Printer cooling // next print in ${cooldown}s` : 'Tap the shutter // it lands on the TV wall' }}
+          {{ cooldown ? `Next photo in ${cooldown}s` : '' }}
         </p>
 
         <!-- Shutter deck sits in the thumb zone -->
@@ -350,7 +350,7 @@ defineExpose({ openWall });
         <div class="mx-auto mt-3 w-full max-w-[min(100%,52dvh)] bg-film-paper p-3 pb-4 text-obsidian">
           <img :src="previewUrl" alt="Your photo" class="aspect-square w-full bg-obsidian object-cover" />
           <label for="polaroid-caption" class="mt-3 block font-mono text-[10px] tracking-widest uppercase">
-            [{{ singerName || 'GUEST' }}] stamp (optional)
+            Caption (optional)
           </label>
           <input
             id="polaroid-caption"
@@ -384,7 +384,7 @@ defineExpose({ openWall });
             @click="send"
           >
             <Send class="size-4" :stroke-width="2" aria-hidden="true" />
-            {{ busy ? 'Beaming' : cooldown ? `Cooling ${cooldown}s` : 'Beam to TV' }}
+            {{ busy ? 'Sending' : cooldown ? `Wait ${cooldown}s` : 'Send to TV' }}
           </button>
         </div>
       </template>
@@ -406,7 +406,7 @@ defineExpose({ openWall });
         <div>
           <h2 id="wall-title" class="font-display text-2xl leading-none font-extrabold tracking-tighter uppercase">Photo wall</h2>
           <p class="mt-1 font-mono text-[11px] tracking-widest text-white/70 uppercase">
-            Host // {{ String(store.polaroids.length).padStart(2, '0') }} saved prints
+            {{ String(store.polaroids.length).padStart(2, '0') }} photos
           </p>
         </div>
         <button
@@ -419,7 +419,7 @@ defineExpose({ openWall });
         </button>
       </div>
       <p v-if="wallError" class="mt-3 font-mono text-[11px] tracking-widest text-neon-coral uppercase" role="alert">{{ wallError }}</p>
-      <p v-if="!store.polaroids.length" class="mt-4 font-mono text-[11px] tracking-widest text-white/70 uppercase">No prints yet.</p>
+      <p v-if="!store.polaroids.length" class="mt-4 font-mono text-[11px] tracking-widest text-white/70 uppercase">No photos</p>
       <ul class="mt-3 grid grid-cols-3 gap-2">
         <li v-for="item in [...store.polaroids].reverse()" :key="item.id" class="relative">
           <img :src="item.imageUrl" :alt="`Photo by ${item.sender}`" class="aspect-square w-full rounded-module object-cover" loading="lazy" />

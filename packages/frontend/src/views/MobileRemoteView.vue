@@ -328,7 +328,7 @@ async function setFairQueue(): Promise<void> {
   hostError.value = '';
   try {
     await store.toggleFairQueue(!store.fairQueueEnabled);
-    announce(`Round robin fair queue ${store.fairQueueEnabled ? 'active' : 'bypassed'}`);
+    announce(`Fair queue ${store.fairQueueEnabled ? 'on' : 'off'}`);
   } catch {
     hostError.value = 'Switch failed — retry';
   }
@@ -355,7 +355,7 @@ async function onRotate(): Promise<void> {
   try {
     rotatedTo.value = await store.rotatePartyToken();
     navigator.vibrate?.(20);
-    announce('Party code rotated. Guests were disconnected.');
+    announce('New party code');
     if (rotatedToTimer) clearTimeout(rotatedToTimer);
     rotatedToTimer = setTimeout(() => (rotatedTo.value = ''), 10000);
   } catch {
@@ -573,8 +573,8 @@ async function hostTrivia(action: () => Promise<void>): Promise<void> {
     const status = /\((\d+)\)/.exec(err instanceof Error ? err.message : '')?.[1];
     hostError.value =
       status === '409' ? 'Stage busy — end the song or vote first'
-        : status === '400' ? 'Waiting for at least 1 player to join'
-          : 'Trivia request failed — retry';
+        : status === '400' ? 'No players yet'
+          : 'Trivia failed — retry';
   } finally {
     triviaBusy.value = false;
   }
@@ -718,7 +718,6 @@ const skeletonRows = 6;
       <div class="mt-3 flex min-h-12 items-center gap-2 rounded-key border border-white/12 bg-surface pl-3">
         <MicVocal class="size-4 shrink-0 text-acid-lime" :stroke-width="ICON_STROKE" aria-hidden="true" />
         <template v-if="!editingName">
-          <span class="font-mono text-[11px] tracking-widest text-white/70 uppercase">MIC</span>
           <span class="min-w-0 flex-1 truncate font-semibold" :class="singerName ? 'text-white' : 'text-white/70'">
             {{ singerName || 'Set your stage name' }}
           </span>
@@ -822,7 +821,7 @@ const skeletonRows = 6;
               <span class="truncate">{{ song.channel }}</span>
             </p>
             <p v-if="queueRequests.get(song.videoId) === 'failed'" class="mt-1 font-mono text-[11px] tracking-widest text-neon-coral uppercase">
-              Couldn't queue — tap retry
+              Queue failed
             </p>
           </div>
           <button
@@ -852,15 +851,10 @@ const skeletonRows = 6;
       </ul>
 
       <section v-else-if="searchState === 'idle'" class="pt-8" aria-label="Get started">
-        <p class="font-mono text-[11px] tracking-widest text-white/70 uppercase">Ready when you are</p>
-        <h1 class="mt-2 font-display text-4xl leading-[0.9] short:text-3xl font-extrabold tracking-tighter uppercase">
+        <h1 class="font-display text-4xl leading-[0.9] short:text-3xl font-extrabold tracking-tighter uppercase">
           Find your<br /><span class="text-acid-lime">song</span>
         </h1>
-        <ul class="mt-6 space-y-2.5 border-t border-white/12 pt-4 font-mono text-[11px] tracking-widest text-white/70 uppercase">
-          <li class="flex gap-3"><span class="text-acid-lime">01</span>Search artist + title</li>
-          <li class="flex gap-3"><span class="text-acid-lime">02</span>Tap queue. We add “karaoke” for you</li>
-          <li class="flex gap-3"><span class="text-acid-lime">03</span>Fair rotation: everyone gets a turn</li>
-        </ul>
+        <p class="mt-6 border-t border-white/12 pt-4 font-mono text-[11px] tracking-widest text-white/70 uppercase">We add “karaoke” to every search</p>
         <InstallCard />
         <p v-if="mySlot >= 0" class="mt-6 rounded-module border border-acid-lime/40 px-3 py-2.5 font-mono text-[11px] tracking-widest text-acid-lime uppercase">
           Your next slot // {{ formatIndex(mySlot) }}
@@ -884,7 +878,7 @@ const skeletonRows = 6;
       </section>
 
       <section v-else class="pt-10 text-center" role="alert">
-        <p class="font-mono text-xs tracking-widest text-neon-coral uppercase">Search offline — retry in a moment</p>
+        <p class="font-mono text-xs tracking-widest text-neon-coral uppercase">Search failed</p>
         <button
           type="button"
           class="mt-4 inline-flex h-11 items-center gap-2 rounded-full border border-white/25 px-5 font-mono text-[11px] font-bold tracking-widest uppercase active:translate-y-px active:bg-surface-elevated"
@@ -926,7 +920,7 @@ const skeletonRows = 6;
             {{ !hasSong ? 'Stage idle' : store.isPaused ? 'Paused' : 'On air' }}<template v-if="store.currentSong"> // {{ store.currentSong.singer }}</template>
           </p>
           <p class="truncate text-sm font-semibold">
-            {{ store.currentSong ? cleanTitle(store.currentSong.title) : 'Queue a track to start the set' }}
+            {{ store.currentSong ? cleanTitle(store.currentSong.title) : 'Nothing playing' }}
           </p>
         </div>
       </div>
@@ -1117,12 +1111,12 @@ const skeletonRows = 6;
             @click="setFairQueue"
           >
             <span class="min-w-0 flex-1">
-              <span class="block font-mono text-[11px] font-bold tracking-widest uppercase">Round-robin fair queue</span>
+              <span class="block font-mono text-[11px] font-bold tracking-widest uppercase">Fair queue</span>
               <span
                 class="block font-mono text-[10px] tracking-widest uppercase"
                 :class="store.fairQueueEnabled ? 'text-acid-lime' : 'text-vinyl-amber'"
               >
-                {{ store.fairQueueEnabled ? 'Active' : 'Bypassed' }}
+                {{ store.fairQueueEnabled ? 'On' : 'Off' }}
               </span>
             </span>
             <span
@@ -1145,11 +1139,11 @@ const skeletonRows = 6;
             @click="onRotate"
           >
             <component :is="rotateArmed ? RotateCcw : KeyRound" class="size-5 shrink-0" :stroke-width="ICON_STROKE" aria-hidden="true" />
-            {{ rotateBusy ? 'Rotating' : rotateArmed ? 'Tap again to kick guests & rotate QR' : 'Rotate party code' }}
+            {{ rotateBusy ? 'Rotating' : rotateArmed ? 'Tap again — disconnects all guests' : 'Rotate party code' }}
           </button>
 
           <p v-if="rotatedTo" class="border-t border-white/12 px-3 py-2.5 font-mono text-[11px] tracking-widest text-acid-lime uppercase" role="status">
-            New code // <span class="text-white normal-case">{{ rotatedTo }}</span> // QR updated
+            New code // <span class="text-white normal-case">{{ rotatedTo }}</span>
           </p>
           <p v-if="hostError" class="border-t border-white/12 px-3 py-2.5 font-mono text-[11px] tracking-widest text-neon-coral uppercase" role="alert">
             {{ hostError }}
@@ -1256,7 +1250,7 @@ const skeletonRows = 6;
           </li>
         </ol>
         <p v-else class="py-10 text-center font-mono text-xs tracking-widest text-white/70 uppercase">
-          Queue is empty. Be the first on the mic.
+          Queue empty
         </p>
 
         <div v-if="undoItem" class="sticky bottom-0 mt-3 flex items-center gap-3 rounded-module border border-white/12 bg-surface-elevated py-1 pl-3">
@@ -1283,11 +1277,10 @@ const skeletonRows = 6;
         <div class="mx-auto h-1 w-10 rounded-full bg-white/25" />
       </div>
       <form class="px-safe pb-safe" @submit.prevent="submitNameSheet">
-        <p class="font-mono text-[11px] tracking-widest text-white/70 uppercase">Before you queue</p>
-        <h2 id="name-sheet-title" class="mt-1 font-display text-3xl leading-none font-extrabold tracking-tighter uppercase">
+        <h2 id="name-sheet-title" class="font-display text-3xl leading-none font-extrabold tracking-tighter uppercase">
           Your stage <span class="text-acid-lime">name</span>
         </h2>
-        <label for="name-sheet-input" class="mt-5 block font-mono text-[11px] tracking-widest text-white/70 uppercase">Shown on the TV when it's your turn</label>
+        <label for="name-sheet-input" class="mt-5 block font-mono text-[11px] tracking-widest text-white/70 uppercase">Shown on the TV</label>
         <input
           id="name-sheet-input"
           v-model="nameSheetDraft"
@@ -1330,11 +1323,10 @@ const skeletonRows = 6;
         <div class="mx-auto h-1 w-10 rounded-full bg-white/25" />
       </div>
       <form class="px-safe pb-safe" @submit.prevent="submitPin">
-        <p class="font-mono text-[11px] tracking-widest text-white/70 uppercase">Restricted // Host only</p>
-        <h2 id="pin-sheet-title" class="mt-1 font-display text-3xl leading-none font-extrabold tracking-tighter uppercase">
+        <h2 id="pin-sheet-title" class="font-display text-3xl leading-none font-extrabold tracking-tighter uppercase">
           Host <span class="text-acid-lime">PIN</span>
         </h2>
-        <label for="host-pin" class="mt-5 block font-mono text-[11px] tracking-widest text-white/70 uppercase">Unlocks queue control + party code</label>
+        <label for="host-pin" class="sr-only">Host PIN</label>
         <input
           id="host-pin"
           v-model="pinDraft"

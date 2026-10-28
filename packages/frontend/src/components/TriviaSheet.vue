@@ -71,7 +71,7 @@ function answer(id: TriviaOptionId): void {
   if (locked.value || phase.value !== 'QUESTION') return;
   navigator.vibrate?.(20);
   status.value = '';
-  store.submitTriviaAnswer(id).catch(() => (status.value = 'ANSWER NOT SENT // TAP AGAIN'));
+  store.submitTriviaAnswer(id).catch(() => (status.value = 'NOT SENT — TAP AGAIN'));
 }
 
 const start = () => run(() => store.startTriviaGame(), 'COULD NOT START // TRY AGAIN');
@@ -110,7 +110,7 @@ function padClass(id: TriviaOptionId): string {
           class="flex h-11 items-center gap-1.5 rounded-key border border-white/25 px-3 font-mono text-[11px] font-bold tracking-widest uppercase active:translate-y-px active:bg-surface-elevated"
           @click="browse"
         >
-          <Minimize2 class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" /> Browse songs
+          <Minimize2 class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" /> Songs
         </button>
         <button
           v-if="store.isAdmin"
@@ -136,7 +136,7 @@ function padClass(id: TriviaOptionId): string {
     <!-- LOBBY -->
     <main v-if="phase === 'LOBBY'" class="flex flex-1 flex-col justify-center py-6">
       <p class="font-display text-4xl leading-[0.9] font-extrabold tracking-tighter uppercase">
-        You're in<span class="text-acid-lime"> // </span>waiting for host
+        Waiting for <span class="text-acid-lime">host</span>
       </p>
       <p class="mt-3 font-mono text-[11px] tracking-widest text-white/70 uppercase">
         {{ game.totalRounds }} QUESTIONS // {{ total }} PLAYERS
@@ -159,7 +159,7 @@ function padClass(id: TriviaOptionId): string {
         @click="start"
       >
         <Play class="size-6" :stroke-width="2" aria-hidden="true" />
-        Start trivia blitz ({{ total }} {{ total === 1 ? 'player' : 'players' }})
+        Start ({{ total }})
       </button>
     </main>
 
@@ -199,9 +199,9 @@ function padClass(id: TriviaOptionId): string {
         <template v-if="phase === 'QUESTION'">
           <p v-if="locked" class="flex items-center gap-2 font-mono text-[11px] font-bold tracking-widest text-acid-lime uppercase">
             <Check class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" />
-            ANSWER LOCKED // WAITING FOR {{ waitingOn }} {{ waitingOn === 1 ? 'OTHER' : 'OTHERS' }}
+            LOCKED // {{ waitingOn }} LEFT
           </p>
-          <p v-else class="font-mono text-[11px] tracking-widest text-white/70 uppercase">TAP A PAD // FASTER = MORE POINTS</p>
+          <p v-else class="font-mono text-[11px] tracking-widest text-white/70 uppercase">FASTER = MORE POINTS</p>
         </template>
         <template v-else>
           <p v-if="resultLine" class="font-display text-2xl leading-none font-extrabold tracking-tighter text-acid-lime uppercase">{{ resultLine }}</p>

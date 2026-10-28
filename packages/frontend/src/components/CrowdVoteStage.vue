@@ -20,7 +20,7 @@ const score = computed(() => props.vote.averageStars.toFixed(1));
 
     <header class="relative">
       <p class="flex items-center justify-between font-mono text-[1.25rem] tracking-widest uppercase">
-        <span class="text-acid-lime">CROWD JURY ACTIVE // VOTE ON YOUR PHONE NOW</span>
+        <span class="text-acid-lime">VOTE ON YOUR PHONE</span>
         <span class="text-white/70 tabular-nums">PRESS OK TO SKIP</span>
       </p>
       <div class="mt-4 h-[0.6rem] bg-white/12" role="presentation">
@@ -32,8 +32,7 @@ const score = computed(() => props.vote.averageStars.toFixed(1));
     </header>
 
     <main class="relative flex min-h-0 flex-1 flex-col justify-center">
-      <p class="font-mono text-[1.25rem] tracking-widest text-white/70 uppercase">PERFORMANCE BY</p>
-      <p class="mt-2 line-clamp-2 font-display text-[7rem] leading-[0.85] font-extrabold tracking-tighter break-words text-acid-lime uppercase">
+      <p class="line-clamp-2 font-display text-[7rem] leading-[0.85] font-extrabold tracking-tighter break-words text-acid-lime uppercase">
         {{ vote.singer }}
       </p>
       <p class="mt-5 truncate text-[2rem] font-semibold text-white/85">{{ vote.songTitle }}</p>
@@ -43,7 +42,7 @@ const score = computed(() => props.vote.averageStars.toFixed(1));
       <!-- Voting: live tally -->
       <div v-if="!vote.revealed" class="flex items-end justify-between gap-[3rem]">
         <p class="font-mono tracking-widest uppercase">
-          <span class="block text-[1.25rem] text-white/70">VOTES CAST</span>
+          <span class="block text-[1.25rem] text-white/70">VOTES</span>
           <span class="block text-[6rem] leading-none font-bold tabular-nums">{{ String(vote.totalVotes).padStart(2, '0') }}</span>
         </p>
         <ul class="flex flex-wrap justify-end gap-3">
@@ -71,7 +70,7 @@ const score = computed(() => props.vote.averageStars.toFixed(1));
             <span class="font-display text-[9rem] leading-none font-extrabold tracking-tighter text-acid-lime">{{ score }}</span>
             <span class="flex items-center gap-3 text-[2.5rem] text-white/80">/ 5.0 <Star class="size-[1em] text-acid-lime" :stroke-width="1.75" aria-hidden="true" /></span>
           </span>
-          <span v-else class="block text-[3rem] leading-none font-bold text-white/70">NO VOTES LOGGED</span>
+          <span v-else class="block text-[3rem] leading-none font-bold text-white/70">NO VOTES</span>
         </p>
         <p
           v-if="winner"

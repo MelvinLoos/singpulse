@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import QrcodeVue from 'qrcode.vue';
-import { Radio, TriangleAlert } from 'lucide-vue-next';
+import { TriangleAlert } from 'lucide-vue-next';
 import type { PlaybackCommand, QueueItem } from '@singpulse/shared/types';
 import { useKaraokeStore } from '../stores/karaoke.ts';
 import { STATUS_META, TONE_TEXT } from '../lib/status.ts';
@@ -219,7 +219,6 @@ onUnmounted(() => {
 });
 
 const screws = ['top-2.5 left-2.5', 'top-2.5 right-2.5', 'bottom-2.5 left-2.5', 'bottom-2.5 right-2.5'];
-const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRACK'];
 </script>
 
 <template>
@@ -248,7 +247,7 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
           class="rounded-t-module bg-vinyl-amber px-4 py-1.5 font-mono text-sm font-bold tracking-widest text-obsidian uppercase"
           role="status"
         >
-          SOUND OFF // PRESS OK TO UNMUTE
+          MUTED // PRESS OK
         </p>
 
         <div class="flex items-center gap-4 px-4 py-2">
@@ -277,7 +276,7 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
         <div class="size-[8rem] shrink-0 overflow-hidden rounded-module bg-white transition-shadow duration-500 [&>svg]:size-full" :class="qrPulse ? 'ring-4 ring-acid-lime' : 'ring-0 ring-transparent'">
           <QrcodeVue :value="store.qrJoinUrl" :size="192" level="L" render-as="svg" :margin="4" />
         </div>
-        <p class="font-mono text-sm tracking-widest text-acid-lime uppercase">Join Now</p>
+        <p class="font-mono text-sm tracking-widest text-acid-lime uppercase">Scan to join</p>
       </aside>
     </template>
 
@@ -292,7 +291,6 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
       <main class="relative grid h-full grid-cols-[minmax(0,1fr)_23rem] gap-x-[5rem] px-[4rem] py-[2.25rem]">
         <section class="flex min-w-0 flex-col">
           <header class="flex items-center justify-between gap-6 font-mono text-sm tracking-widest text-white/70 uppercase">
-            <span>SINGPULSE // STAGE RECEIVER</span>
             <span class="flex items-center gap-3" role="status">
               <span
                 class="size-[0.55rem] rounded-full"
@@ -300,7 +298,7 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
                 aria-hidden="true"
               />
               <template v-if="store.connected">
-                ONLINE // TOKEN: <span class="text-white normal-case">{{ store.partyToken }}</span>
+                CODE: <span class="text-white normal-case">{{ store.partyToken }}</span>
               </template>
               <template v-else>RECONNECTING…</template>
             </span>
@@ -325,14 +323,11 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
             <h1 class="font-display text-[6rem] leading-[0.8] font-extrabold tracking-tighter uppercase">
               Sing<br /><span class="text-acid-lime">Pulse</span>
             </h1>
-            <p class="mt-5 font-mono text-sm tracking-widest text-white/70 uppercase">
-              Late-night karaoke // fair rotation // everyone sings
-            </p>
           </div>
 
           <section class="mt-auto pt-[1.5rem]" aria-labelledby="setlist-title">
             <div class="flex items-end justify-between border-b border-white/12 pb-3 font-mono text-sm tracking-widest uppercase">
-              <h2 id="setlist-title" class="text-white">UPCOMING SETLIST</h2>
+              <h2 id="setlist-title" class="text-white">UP NEXT</h2>
               <span class="text-white/70 tabular-nums">{{ String(store.queue.length).padStart(2, '0') }} IN QUEUE</span>
             </div>
 
@@ -350,13 +345,13 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
                 <div class="flex flex-col gap-2">
                   <SegmentBar :item="item" class="h-[0.5rem]" />
                   <span class="font-mono text-sm tracking-widest uppercase" :class="TONE_TEXT[STATUS_META[item.status].tone]">
-                    {{ STATUS_META[item.status].tv }}
+                    {{ STATUS_META[item.status].label }}
                   </span>
                 </div>
               </li>
             </ol>
             <p v-else class="py-[1.75rem] font-mono text-[1.125rem] tracking-widest text-white/70 uppercase">
-              NO TRACKS YET. SCAN TO DROP THE FIRST ONE.
+              QUEUE EMPTY
             </p>
           </section>
         </section>
@@ -370,14 +365,6 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
               :class="screw"
               aria-hidden="true"
             />
-            <div class="flex items-center justify-between border-b border-white/12 px-6 py-4 font-mono text-sm tracking-widest uppercase">
-              <span class="text-white/70">MODULE 02 // UPLINK</span>
-              <span class="flex items-center gap-2 text-neon-coral">
-                <Radio class="size-[1.1em]" :stroke-width="1.75" aria-hidden="true" />
-                LIVE
-              </span>
-            </div>
-
             <div class="px-7 pt-6 pb-6">
               <div class="mx-auto size-[13rem] overflow-hidden rounded-module bg-white transition-shadow duration-500 [&>svg]:size-full" :class="qrPulse ? 'ring-4 ring-acid-lime' : 'ring-0 ring-transparent'">
                 <QrcodeVue :value="store.qrJoinUrl" :size="260" level="M" render-as="svg" :margin="4" />
@@ -386,19 +373,6 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
                 Scan to sing
               </p>
             </div>
-
-            <!-- Ticket-stub tear line -->
-            <div class="relative h-px bg-perforation" aria-hidden="true">
-              <span class="absolute top-1/2 -left-[0.6rem] size-[1.2rem] -translate-y-1/2 rounded-full border border-white/12 bg-obsidian" />
-              <span class="absolute top-1/2 -right-[0.6rem] size-[1.2rem] -translate-y-1/2 rounded-full border border-white/12 bg-obsidian" />
-            </div>
-
-            <ol class="space-y-3 px-7 py-6 font-mono text-sm tracking-widest uppercase">
-              <li v-for="(step, index) in joinSteps" :key="step" class="flex gap-4">
-                <span class="text-acid-lime tabular-nums">{{ formatIndex(index) }}</span>
-                <span class="text-white/85">{{ step }}</span>
-              </li>
-            </ol>
 
             <p class="truncate border-t border-white/12 px-7 py-4 font-mono text-sm tracking-widest text-white/70">{{ joinHost }}</p>
           </div>

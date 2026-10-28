@@ -26,7 +26,7 @@ const round = computed(() =>
 watch(
   () => game.value?.gameId,
   (id) => {
-    if (id && !store.isJoinedInTrivia) emit('announce', 'Trivia Blitz is open. Join the game or keep browsing songs.');
+    if (id && !store.isJoinedInTrivia) emit('announce', 'Trivia Blitz open');
   }
 );
 </script>
@@ -46,7 +46,7 @@ watch(
           class="h-11 rounded-key bg-acid-lime px-3 font-mono text-[11px] font-bold tracking-widest text-obsidian uppercase active:translate-y-px"
           @click="emit('join')"
         >
-          Join game
+          Join
         </button>
         <button
           type="button"
@@ -76,9 +76,9 @@ watch(
     >
       <span class="flex min-w-0 items-center gap-2">
         <Trophy class="size-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-        <span class="truncate">TRIVIA ACTIVE // YOUR SCORE: {{ store.myTriviaPlayer?.score ?? 0 }} PTS</span>
+        <span class="truncate">TRIVIA // {{ store.myTriviaPlayer?.score ?? 0 }} PTS</span>
       </span>
-      <span class="flex shrink-0 items-center gap-1.5">Return to pad <Maximize2 class="size-4" :stroke-width="1.75" aria-hidden="true" /></span>
+      <span class="flex shrink-0 items-center gap-1.5">Back to game <Maximize2 class="size-4" :stroke-width="1.75" aria-hidden="true" /></span>
     </button>
   </div>
 </template>

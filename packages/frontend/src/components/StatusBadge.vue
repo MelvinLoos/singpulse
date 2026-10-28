@@ -8,8 +8,8 @@ const props = defineProps<{ item: Pick<QueueItem, 'status' | 'progress'> }>();
 const meta = computed(() => STATUS_META[props.item.status]);
 const label = computed(() =>
   props.item.status === 'downloading' && props.item.progress
-    ? `${meta.value.remote} ${String(props.item.progress).padStart(2, '0')}%`
-    : meta.value.remote
+    ? `${meta.value.label} ${String(props.item.progress).padStart(2, '0')}%`
+    : meta.value.label
 );
 </script>
 
