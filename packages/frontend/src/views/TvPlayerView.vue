@@ -11,6 +11,7 @@ import EqualizerBadge from '../components/EqualizerBadge.vue';
 import PolaroidBursts from '../components/PolaroidBursts.vue';
 import PolaroidFrame from '../components/PolaroidFrame.vue';
 import CrowdVoteStage from '../components/CrowdVoteStage.vue';
+import TriviaStage from '../components/TriviaStage.vue';
 
 const CUE_DURATION_MS = 3200;
 const CUE_EXIT_MS = 600;
@@ -419,6 +420,9 @@ const joinSteps = ['SCAN THE CODE', 'SET YOUR STAGE NAME', 'SEARCH + QUEUE A TRA
 
     <!-- POST-SONG CROWD VOTE -->
     <CrowdVoteStage v-if="store.activeVote" :key="store.activeVote.songId" :vote="store.activeVote" />
+
+    <!-- TRIVIA BLITZ: takes the whole stage; any future idle audio must stay off while this is mounted -->
+    <TriviaStage v-if="store.activeTrivia" :game="store.activeTrivia" />
 
     <!-- SONG-CHANGE CUE CARD -->
     <div

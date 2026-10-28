@@ -2,14 +2,22 @@
 import { computed } from 'vue';
 import type { QueueItem } from '@singpulse/shared/types';
 import { STATUS_META, TONE_FILL, litSegments } from '../lib/status.ts';
+import type { StatusTone } from '../lib/status.ts';
 
+// Either a queue item (status-driven) or a plain 0-1 `fill` with an explicit tone
 const props = withDefaults(defineProps<{
-  item: Pick<QueueItem, 'status' | 'progress'>;
+  item?: Pick<QueueItem, 'status' | 'progress'>;
+  fill?: number;
+  tone?: StatusTone;
+  label?: string;
   segments?: number;
-}>(), { segments: 10 });
+}>(), { segments: 10, label: 'Download progress' });
 
-const tone = computed(() => STATUS_META[props.item.status].tone);
-const lit = computed(() => litSegments(props.item, props.segments));
+const tone = computed(() => props.tone ?? (props.item ? STATUS_META[props.item.status].tone : 'ready'));
+const lit = computed(() => {
+  if (props.fill !== undefined) return Math.round(Math.min(1, Math.max(0, props.fill)) * props.segments);
+  return props.item ? litSegments(props.item, props.segments) : 0;
+});
 const percent = computed(() => Math.round((lit.value / props.segments) * 100));
 </script>
 
@@ -17,7 +25,7 @@ const percent = computed(() => Math.round((lit.value / props.segments) * 100));
   <div
     class="flex items-stretch gap-[3px]"
     role="meter"
-    aria-label="Download progress"
+    :aria-label="label"
     :aria-valuenow="percent"
     aria-valuemin="0"
     aria-valuemax="100"

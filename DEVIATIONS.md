@@ -119,3 +119,20 @@ Not in the spec; additive. Nothing in §4 (shared contracts) changed.
 | `@fastify/static` for the SPA now sets `Cache-Control`: `no-cache` for `sw.js`, `workbox-*.js`, `manifest.webmanifest` and `index.html` (also on the SPA fallback), `immutable` for `/assets/*` | A stale worker or shell pinned by a browser or the Cloudflare edge would stop guests getting updates. |
 | The party token is also kept in `localStorage['singpulse_party_token']`; a rejected token shows a code-entry panel instead of a dead end | A home-screen launch has no `?token=`, and iOS home-screen apps do not share storage with Safari, so a rescan cannot help. |
 | WebSocket reconnect: capped exponential backoff (1 to 15 s) instead of a fixed 2 s, a liveness check on resume and a 4 s ping watchdog | Phones freeze sockets when the screen sleeps. |
+
+## Trivia Blitz (opt-in OpenTDB party quiz)
+
+Not in the spec; additive. `ServerStatePayload` gains `activeTrivia`; nothing else in §4 changed.
+
+| Change | Why |
+| --- | --- |
+| The lobby guards `currentSong`, `activeVote` and an already-open game (409). There is no intro quiz in the codebase to guard against. | The requested guard list names a feature that does not exist. |
+| Scores, streaks and `lastAnswerCorrect` are computed at answer time but only written to the public `players` at REVEAL (private per-round map in `QueueManager`). `correctOptionId` is only present in REVEAL. | `STATE_SYNC` goes to every phone, so publishing results early would leak who was right. |
+| `lockedInCount` is always derived from `players` (`hasAnsweredCurrent`), never incremented. A 51st auto-enrolling answer is refused with 409. | Joins, leaves and answers cannot drift apart. |
+| `api.php` calls are spaced 5.1 s apart (OpenTDB code 5); `api_token.php` is never gated. Starting a game waits at most 6.5 s for the prefetch, then uses the offline bank. | A token refresh plus retry must finish inside the wait, and a slow API must not stall the room. |
+| If the last player leaves mid-game, the game ends and the queue resumes. In the lobby it stays open. | Nobody is playing; the karaoke queue should not be held hostage. |
+| `advancePlayback()` is blocked while trivia is active; downloads continue. Ending trivia (stop, podium timeout, empty roster) promotes the first ready song. | Requested queue behaviour. |
+| `/api/stats` and `PartyStatus` are unchanged (trivia reads as `idle`). | Keeps the dashboard contract stable. |
+| The TV has no idle audio today, so nothing is ducked. Any future idle audio must be gated on `!store.activeTrivia`. | Avoids clashing with `triviaSounds.ts`. |
+| `SegmentBar` accepts a plain 0-1 `fill` (and `tone`) next to the queue-item mode. | The 14 s countdown reuses the same segmented bar. |
+| `TriviaPlayer.playerId` in `STATE_SYNC` is a salted HMAC of the phone's `voterId`, not the `voterId` itself. The request bodies still carry the `voterId` as `playerId`; `join` and `answer` return the public id, which the phone keeps in `sessionStorage['singpulse_trivia_player']`. | `STATE_SYNC` reaches every phone, so broadcasting the `voterId` would let anyone kick a player or answer for them, and cast their crowd votes. A reload within a game restores the id; if it is lost, tapping JOIN again recovers it (join is idempotent). |

@@ -1,6 +1,6 @@
 // packages/frontend/src/stores/karaoke.ts
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type {
   AdminRotateTokenResponse,
   QueueItem,
@@ -8,16 +8,22 @@ import type {
   PlaybackCommand,
   PolaroidItem,
   SubmitPolaroidRequest,
+  TriviaCategoryKey,
+  TriviaDifficulty,
+  TriviaGameState,
+  TriviaOptionId,
   VoteSuperlative,
   VotingSessionState,
   WsOutboundMessage
 } from '@singpulse/shared/types';
 import { compressPhoto } from '../lib/imageResize.ts';
-import { normaliseSingerName } from '../lib/singerName.ts';
+import { normaliseSingerName, useSingerName } from '../lib/singerName.ts';
 
 const ADMIN_PIN_KEY = 'singpulse_admin_pin';
 const PARTY_TOKEN_KEY = 'singpulse_party_token';
 const VOTER_ID_KEY = 'singpulse_voter_id';
+const TRIVIA_ANSWER_KEY = 'singpulse_trivia_answer';
+const TRIVIA_PLAYER_KEY = 'singpulse_trivia_player';
 const WS_CLOSE_TOKEN_ROTATED = 4001;
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
@@ -59,6 +65,49 @@ interface MyVote {
   songId: string;
   stars: number;
   superlative?: VoteSuperlative;
+}
+
+interface StoredTriviaAnswer {
+  gameId: string;
+  roundIndex: number;
+  optionId: TriviaOptionId;
+}
+
+function readTriviaAnswer(): StoredTriviaAnswer | null {
+  try {
+    const raw = sessionStorage.getItem(TRIVIA_ANSWER_KEY);
+    return raw ? (JSON.parse(raw) as StoredTriviaAnswer) : null;
+  } catch {
+    return null; // Storage blocked or corrupt: the locked pads still come from the server
+  }
+}
+
+function writeTriviaAnswer(entry: StoredTriviaAnswer | null): void {
+  try {
+    if (entry) sessionStorage.setItem(TRIVIA_ANSWER_KEY, JSON.stringify(entry));
+    else sessionStorage.removeItem(TRIVIA_ANSWER_KEY);
+  } catch {
+    // In-memory state still works for this session
+  }
+}
+
+// The server's public id for this phone in the current game (never the private voterId)
+function readTriviaPlayer(): { gameId: string; playerId: string } | null {
+  try {
+    const raw = sessionStorage.getItem(TRIVIA_PLAYER_KEY);
+    return raw ? (JSON.parse(raw) as { gameId: string; playerId: string }) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeTriviaPlayer(entry: { gameId: string; playerId: string } | null): void {
+  try {
+    if (entry) sessionStorage.setItem(TRIVIA_PLAYER_KEY, JSON.stringify(entry));
+    else sessionStorage.removeItem(TRIVIA_PLAYER_KEY);
+  } catch {
+    // In-memory state still works for this session
+  }
 }
 
 function readStoredPin(): string | null {
@@ -132,6 +181,15 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   const hasVotedCurrentSong = computed(
     () => activeVote.value !== null && myCurrentVote.value?.songId === activeVote.value.songId
   );
+  const activeTrivia = ref<TriviaGameState | null>(null);
+  const triviaMinimized = ref<boolean>(false);
+  const myTriviaAnswer = ref<TriviaOptionId | null>(null);
+  const { singerName } = useSingerName();
+  const triviaPlayerId = ref<string | null>(null);
+  const myTriviaPlayer = computed(
+    () => activeTrivia.value?.players.find((p) => p.playerId === triviaPlayerId.value) ?? null
+  );
+  const isJoinedInTrivia = computed(() => myTriviaPlayer.value !== null);
   const burstTimers = new Set<ReturnType<typeof setTimeout>>();
 
   let ws: WebSocket | null = null;
@@ -198,6 +256,7 @@ export const useKaraokeStore = defineStore('karaoke', () => {
         fairQueueEnabled.value = data.fairQueueEnabled;
         activeVote.value = data.activeVote;
         polaroids.value = data.polaroids;
+        activeTrivia.value = data.activeTrivia;
       } else if (data.type === 'POLAROID_BURST') {
         showPolaroidBurst(data.payload);
       } else if (data.type === 'PLAYER_COMMAND' && onCommandCallback) {
@@ -333,6 +392,86 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   // TV remote: cut the intermission short
   function skipVote() {
     ws?.send(JSON.stringify({ type: 'SKIP_VOTE' }));
+  }
+
+  // A new question clears the chosen pad; a reload mid-question restores it
+  watch(
+    () => [activeTrivia.value?.gameId, activeTrivia.value?.roundIndex] as const,
+    ([gameId, roundIndex], previous) => {
+      if (!gameId) {
+        myTriviaAnswer.value = null;
+        triviaMinimized.value = false;
+        writeTriviaAnswer(null);
+        writeTriviaPlayer(null);
+        triviaPlayerId.value = null;
+        return;
+      }
+      if (previous?.[0] !== gameId) triviaMinimized.value = false;
+      const storedPlayer = readTriviaPlayer();
+      triviaPlayerId.value = storedPlayer?.gameId === gameId ? storedPlayer.playerId : null;
+      const stored = readTriviaAnswer();
+      myTriviaAnswer.value =
+        stored && stored.gameId === gameId && stored.roundIndex === roundIndex ? stored.optionId : null;
+    }
+  );
+
+  function guestPost(path: string, body: unknown): Promise<Response> {
+    return fetch(`/api/trivia${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-party-token': partyToken.value },
+      body: JSON.stringify(body)
+    });
+  }
+
+  async function openTriviaLobby(category: TriviaCategoryKey, difficulty: TriviaDifficulty, totalRounds: number) {
+    await adminCall('/trivia/lobby', { method: 'POST', body: JSON.stringify({ category, difficulty, totalRounds }) });
+  }
+
+  async function startTriviaGame() {
+    await adminCall('/trivia/start', { method: 'POST' });
+  }
+
+  async function stopTriviaGame() {
+    await adminCall('/trivia/stop', { method: 'POST' });
+  }
+
+  // 'needs-name' tells the view to collect a stage name first
+  function rememberTriviaPlayer(playerId: string) {
+    triviaPlayerId.value = playerId;
+    const gameId = activeTrivia.value?.gameId;
+    if (gameId) writeTriviaPlayer({ gameId, playerId });
+  }
+
+  async function joinTrivia(): Promise<'joined' | 'needs-name'> {
+    const name = normaliseSingerName(singerName.value);
+    if (!name) return 'needs-name';
+    const res = await guestPost('/join', { playerId: voterId, name });
+    if (!res.ok) throw new Error(`Trivia join failed (${res.status})`);
+    rememberTriviaPlayer(((await res.json()) as { playerId: string }).playerId);
+    triviaMinimized.value = false;
+    return 'joined';
+  }
+
+  async function leaveTrivia() {
+    const res = await guestPost('/leave', { playerId: voterId });
+    if (!res.ok && res.status !== 404) throw new Error(`Trivia leave failed (${res.status})`);
+  }
+
+  async function submitTriviaAnswer(optionId: TriviaOptionId) {
+    const game = activeTrivia.value;
+    if (!game || game.phase !== 'QUESTION' || myTriviaAnswer.value) return;
+    myTriviaAnswer.value = optionId;
+    writeTriviaAnswer({ gameId: game.gameId, roundIndex: game.roundIndex, optionId });
+    try {
+      const name = normaliseSingerName(singerName.value);
+      const res = await guestPost('/answer', { playerId: voterId, optionId, ...(name ? { name } : {}) });
+      if (!res.ok) throw new Error(`Trivia answer failed (${res.status})`);
+      rememberTriviaPlayer(((await res.json()) as { playerId: string }).playerId);
+    } catch (err) {
+      myTriviaAnswer.value = null;
+      writeTriviaAnswer(null);
+      throw err;
+    }
   }
 
   async function sendPolaroid(file: File, caption?: string, sender = 'GUEST') {
@@ -513,6 +652,17 @@ export const useKaraokeStore = defineStore('karaoke', () => {
     connected,
     connect,
     activeVote,
+    activeTrivia,
+    triviaMinimized,
+    myTriviaAnswer,
+    myTriviaPlayer,
+    isJoinedInTrivia,
+    openTriviaLobby,
+    startTriviaGame,
+    stopTriviaGame,
+    joinTrivia,
+    leaveTrivia,
+    submitTriviaAnswer,
     polaroids,
     livePolaroidBursts,
     myCurrentVote,

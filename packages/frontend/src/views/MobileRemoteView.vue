@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronUp,
   Disc3,
+  Gamepad2,
   GripVertical,
   KeyRound,
   ListMusic,
@@ -20,6 +21,7 @@ import {
   Search,
   ShieldCheck,
   SkipForward,
+  Square,
   Trash2,
   Undo2,
   UserPen,
@@ -32,6 +34,10 @@ import { cleanTitle, formatDuration, formatIndex } from '../lib/format.ts';
 import EqualizerBadge from '../components/EqualizerBadge.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import CrowdVoteSheet from '../components/CrowdVoteSheet.vue';
+import TriviaBanner from '../components/TriviaBanner.vue';
+import TriviaSheet from '../components/TriviaSheet.vue';
+import { TRIVIA_CATEGORIES, TRIVIA_DIFFICULTIES } from '../lib/trivia.ts';
+import type { TriviaCategoryKey, TriviaDifficulty } from '@singpulse/shared/types';
 import PolaroidCamera from '../components/PolaroidCamera.vue';
 import InstallCard from '../components/InstallCard.vue';
 import RejoinPanel from '../components/RejoinPanel.vue';
@@ -522,15 +528,61 @@ function openNameSheet(): void {
 
 function onNameSheetClose(): void {
   pendingSong.value = null;
+  pendingTriviaJoin.value = false;
 }
 
 function submitNameSheet(): void {
   if (!saveSingerName(nameSheetDraft.value)) return;
   editingName.value = false;
   const song = pendingSong.value;
+  const joinTrivia = pendingTriviaJoin.value;
   nameSheet.value?.close();
   if (song) void queueSong(song);
+  if (joinTrivia) void joinTriviaGame();
 }
+
+/* ------------------------------------------------------------------ trivia */
+const pendingTriviaJoin = ref(false);
+
+async function joinTriviaGame(): Promise<void> {
+  try {
+    if ((await store.joinTrivia()) === 'needs-name') {
+      pendingTriviaJoin.value = true;
+      openNameSheet();
+      return;
+    }
+    navigator.vibrate?.(10);
+    announce('Joined Trivia Blitz');
+  } catch {
+    announce('Could not join Trivia Blitz. Tap join to retry.');
+  }
+}
+
+const triviaCategory = ref<TriviaCategoryKey>('MUSIC');
+const triviaDifficulty = ref<TriviaDifficulty>('mixed');
+const triviaRounds = ref<5 | 10>(5);
+const triviaBusy = ref(false);
+
+async function hostTrivia(action: () => Promise<void>): Promise<void> {
+  if (triviaBusy.value) return;
+  triviaBusy.value = true;
+  hostError.value = '';
+  try {
+    await action();
+  } catch (err) {
+    const status = /\((\d+)\)/.exec(err instanceof Error ? err.message : '')?.[1];
+    hostError.value =
+      status === '409' ? 'Stage busy — end the song or vote first'
+        : status === '400' ? 'Waiting for at least 1 player to join'
+          : 'Trivia request failed — retry';
+  } finally {
+    triviaBusy.value = false;
+  }
+}
+
+const openLobby = () => hostTrivia(() => store.openTriviaLobby(triviaCategory.value, triviaDifficulty.value, triviaRounds.value));
+const startTrivia = () => hostTrivia(() => store.startTriviaGame());
+const endTrivia = () => hostTrivia(() => store.stopTriviaGame());
 
 /* --------------------------------------------------------------- lifecycle */
 const deckEl = ref<HTMLElement | null>(null);
@@ -715,6 +767,7 @@ const skeletonRows = 6;
     </header>
 
     <form role="search" class="sticky top-0 z-10 border-b border-white/12 bg-obsidian px-safe pt-2 pb-3" @submit.prevent="searchNow">
+      <TriviaBanner class="mb-2" @join="joinTriviaGame" @announce="announce" />
       <div class="relative">
         <label for="song-search" class="sr-only">Search songs</label>
         <Search
@@ -975,6 +1028,85 @@ const skeletonRows = 6;
             >
               <Lock class="size-3.5" :stroke-width="ICON_STROKE" aria-hidden="true" /> Lock
             </button>
+          </div>
+
+
+          <!-- TRIVIA BLITZ launcher -->
+          <div class="border-b border-white/12 px-3 py-3" aria-label="Trivia Blitz">
+            <p class="flex items-center gap-2 font-mono text-[11px] font-bold tracking-widest uppercase">
+              <Gamepad2 class="size-4 text-acid-lime" :stroke-width="ICON_STROKE" aria-hidden="true" /> Trivia blitz
+              <span v-if="store.activeTrivia" class="ml-auto text-acid-lime">{{ store.activeTrivia.phase }} // {{ store.activeTrivia.players.length }} IN</span>
+            </p>
+            <template v-if="!store.activeTrivia">
+              <div class="mt-2 flex flex-wrap gap-2" role="group" aria-label="Category">
+                <button
+                  v-for="c in TRIVIA_CATEGORIES"
+                  :key="c.key"
+                  type="button"
+                  class="h-11 rounded-full border px-3 font-mono text-[11px] font-bold tracking-widest uppercase active:translate-y-px"
+                  :class="triviaCategory === c.key ? 'border-acid-lime bg-acid-lime text-obsidian' : 'border-white/25 text-white/80'"
+                  :aria-pressed="triviaCategory === c.key"
+                  @click="triviaCategory = c.key"
+                >
+                  {{ c.label }}
+                </button>
+              </div>
+              <div class="mt-2 flex gap-2">
+                <div class="flex flex-1 gap-1" role="group" aria-label="Difficulty">
+                  <button
+                    v-for="d in TRIVIA_DIFFICULTIES"
+                    :key="d.key"
+                    type="button"
+                    class="h-11 flex-1 rounded-key border font-mono text-[11px] font-bold tracking-widest uppercase active:translate-y-px"
+                    :class="triviaDifficulty === d.key ? 'border-acid-lime text-acid-lime' : 'border-white/25 text-white/70'"
+                    :aria-pressed="triviaDifficulty === d.key"
+                    @click="triviaDifficulty = d.key"
+                  >
+                    {{ d.label }}
+                  </button>
+                </div>
+                <div class="flex gap-1" role="group" aria-label="Rounds">
+                  <button
+                    v-for="n in ([5, 10] as const)"
+                    :key="n"
+                    type="button"
+                    class="h-11 w-12 rounded-key border font-mono text-[11px] font-bold tracking-widest uppercase active:translate-y-px"
+                    :class="triviaRounds === n ? 'border-acid-lime text-acid-lime' : 'border-white/25 text-white/70'"
+                    :aria-pressed="triviaRounds === n"
+                    @click="triviaRounds = n"
+                  >
+                    {{ n }}Q
+                  </button>
+                </div>
+              </div>
+              <button
+                type="button"
+                class="mt-2 flex min-h-12 w-full items-center justify-center gap-2 rounded-key bg-acid-lime font-mono text-[11px] font-bold tracking-widest text-obsidian uppercase active:translate-y-px disabled:opacity-50"
+                :disabled="triviaBusy"
+                @click="openLobby"
+              >
+                Open lobby
+              </button>
+            </template>
+            <div v-else class="mt-2 flex gap-2">
+              <button
+                v-if="store.activeTrivia.phase === 'LOBBY'"
+                type="button"
+                class="min-h-12 flex-1 rounded-key bg-acid-lime font-mono text-[11px] font-bold tracking-widest text-obsidian uppercase active:translate-y-px disabled:opacity-50"
+                :disabled="triviaBusy || store.activeTrivia.players.length === 0"
+                @click="startTrivia"
+              >
+                Start now ({{ store.activeTrivia.players.length }})
+              </button>
+              <button
+                type="button"
+                class="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-key border border-neon-coral font-mono text-[11px] font-bold tracking-widest text-neon-coral uppercase active:translate-y-px disabled:opacity-50"
+                :disabled="triviaBusy"
+                @click="endTrivia"
+              >
+                <Square class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" /> End trivia
+              </button>
+            </div>
           </div>
 
           <button
@@ -1242,6 +1374,9 @@ const skeletonRows = 6;
 
     <!-- POST-SONG CROWD VOTE -->
     <CrowdVoteSheet v-if="store.activeVote" :key="store.activeVote.songId" :vote="store.activeVote" />
+
+    <!-- TRIVIA BLITZ GAME PAD: only for opted-in players; BROWSE SONGS hides it -->
+    <TriviaSheet v-if="store.activeTrivia && store.isJoinedInTrivia && !store.triviaMinimized" />
 
     <p class="sr-only" aria-live="polite">{{ announcement }}</p>
   </div>

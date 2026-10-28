@@ -68,6 +68,54 @@ export interface VoteSubmission {
   superlative?: VoteSuperlative;
 }
 
+// --- Trivia Blitz: opt-in OpenTDB party quiz between karaoke sets ---
+
+export type TriviaCategoryKey =
+  | 'MUSIC'          // OpenTDB cat 12
+  | 'FILM_TV'        // OpenTDB cat 11 or 14
+  | 'VIDEO_GAMES'    // OpenTDB cat 15
+  | 'POP_CULTURE'    // OpenTDB cat 26 (Celebrities) / 9
+  | 'PARTY_MIX';     // Any category
+
+export type TriviaDifficulty = 'easy' | 'medium' | 'hard' | 'mixed';
+
+export type TriviaPhase = 'LOBBY' | 'QUESTION' | 'REVEAL' | 'PODIUM';
+
+export type TriviaOptionId = 'A' | 'B' | 'C' | 'D';
+
+export interface TriviaPlayer {
+  playerId: string;
+  name: string;
+  score: number;
+  streak: number;
+  hasAnsweredCurrent: boolean;
+  lastPointsEarned: number;
+  lastAnswerCorrect: boolean | null; // null = no answer this round; only updated at REVEAL
+}
+
+export interface TriviaOption {
+  id: TriviaOptionId;
+  text: string;
+}
+
+export interface TriviaGameState {
+  gameId: string;
+  phase: TriviaPhase;
+  category: TriviaCategoryKey;
+  difficulty: TriviaDifficulty;
+  roundIndex: number;        // 0-based current question index
+  totalRounds: number;       // e.g., 5 or 10
+  players: TriviaPlayer[];   // Only explicitly opted-in players
+  phaseEndsAt: number | null; // Timestamp (ms) for QUESTION (14s), REVEAL (4.5s), or PODIUM (12s)
+  questionText?: string;
+  questionCategoryLabel?: string;
+  questionDifficulty?: 'easy' | 'medium' | 'hard';
+  options?: TriviaOption[];
+  lockedInCount: number;     // How many joined players have answered the current question
+  correctOptionId?: TriviaOptionId; // ONLY populated during 'REVEAL' phase!
+  roundFastestPlayerName?: string | null;
+}
+
 export interface ServerStatePayload {
   type: 'STATE_SYNC';
   // Only sent to the TV receiver: guests and the host never learn the live token
@@ -80,6 +128,7 @@ export interface ServerStatePayload {
   fairQueueEnabled: boolean;
   activeVote: VotingSessionState | null;
   polaroids: PolaroidItem[];  // latest saved photos, oldest first
+  activeTrivia: TriviaGameState | null;
 }
 
 export interface ServerPolaroidPayload {
@@ -126,6 +175,29 @@ export interface AdminFairQueueRequest {
 
 export interface AdminRotateTokenResponse {
   partyToken: string;
+}
+
+export interface AdminTriviaLobbyRequest {
+  category: TriviaCategoryKey;
+  difficulty: TriviaDifficulty;
+  totalRounds: 5 | 10;
+}
+
+// --- Trivia Blitz guest REST payloads (party token only) ---
+
+export interface TriviaJoinRequest {
+  playerId: string;
+  name: string;
+}
+
+export interface TriviaLeaveRequest {
+  playerId: string;
+}
+
+export interface TriviaAnswerRequest {
+  playerId: string;
+  optionId: TriviaOptionId;
+  name?: string;           // Lets a latecomer auto-enroll on their first tap
 }
 
 // Guest sockets dropped by a token rotation close with code 4001, reason 'PARTY_TOKEN_ROTATED'.

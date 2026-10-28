@@ -15,17 +15,22 @@ import type {
   AdminFairQueueRequest,
   AdminReorderRequest,
   AdminRotateTokenResponse,
+  AdminTriviaLobbyRequest,
   AdminUpdateQueueItemRequest,
   PlaybackCommand,
   QueueItem,
   ServerStatePayload,
   StatsPayload,
   SubmitPolaroidRequest,
+  TriviaAnswerRequest,
+  TriviaJoinRequest,
+  TriviaLeaveRequest,
   VoteSuperlative,
   WsInboundMessage,
   WsOutboundMessage
 } from '@singpulse/shared/types';
-import type { FastifyRequest } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { TriviaResult } from './queueManager.ts';
 import type { WebSocket } from 'ws';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -434,6 +439,65 @@ app.delete('/api/queue/:id', {
   return { ok: true };
 });
 
+// Trivia Blitz (guests opt in): party-token auth like the queue routes. The body's playerId is the
+// phone's private voterId; STATE_SYNC only ever carries a salted public id derived from it.
+const TRIVIA_PLAYER_ID = { type: 'string', minLength: 8, maxLength: 64 } as const;
+const TRIVIA_NAME = { type: 'string', minLength: 1, maxLength: 32, pattern: '\\S' } as const;
+
+function triviaReply(reply: FastifyReply, result: TriviaResult) {
+  if (result === 'ok') return { ok: true };
+  if (result === 'no-players') return reply.code(400).send({ error: 'Waiting for at least 1 player to join' });
+  if (result === 'not-found') return reply.code(404).send({ error: 'No trivia game for that request' });
+  return reply.code(409).send({ error: 'Trivia is not accepting that right now' });
+}
+
+app.post('/api/trivia/join', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['playerId', 'name'],
+      additionalProperties: false,
+      properties: { playerId: TRIVIA_PLAYER_ID, name: TRIVIA_NAME }
+    }
+  }
+}, async (req, reply) => {
+  if (!isAuthorizedRequest(req)) return reply.code(401).send({ error: 'Unauthorized' });
+  const { playerId, name } = req.body as TriviaJoinRequest;
+  const result = queueManager.joinTrivia(playerId, name);
+  return result === 'ok' ? { ok: true, playerId: queueManager.triviaPlayerId(playerId) } : triviaReply(reply, result);
+});
+
+app.post('/api/trivia/leave', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['playerId'],
+      additionalProperties: false,
+      properties: { playerId: TRIVIA_PLAYER_ID }
+    }
+  }
+}, async (req, reply) => {
+  if (!isAuthorizedRequest(req)) return reply.code(401).send({ error: 'Unauthorized' });
+  const { playerId } = req.body as TriviaLeaveRequest;
+  return triviaReply(reply, queueManager.leaveTrivia(playerId));
+});
+
+app.post('/api/trivia/answer', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['playerId', 'optionId'],
+      additionalProperties: false,
+      properties: { playerId: TRIVIA_PLAYER_ID, optionId: { enum: ['A', 'B', 'C', 'D'] }, name: TRIVIA_NAME }
+    }
+  }
+}, async (req, reply) => {
+  if (!isAuthorizedRequest(req)) return reply.code(401).send({ error: 'Unauthorized' });
+  const { playerId, optionId, name } = req.body as TriviaAnswerRequest;
+  const result = queueManager.submitTriviaAnswer(playerId, optionId, name);
+  return result === 'ok' ? { ok: true, playerId: queueManager.triviaPlayerId(playerId) } : triviaReply(reply, result);
+});
+
 // Polaroid photo-bomb: persisted to disk, rate limited per client
 const lastPolaroidAt = new Map<string, number>();
 setInterval(() => {
@@ -547,6 +611,28 @@ await app.register(
       }
       return { partyToken: token };
     });
+
+    admin.post('/trivia/lobby', {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['category', 'difficulty', 'totalRounds'],
+          properties: {
+            category: { enum: ['MUSIC', 'FILM_TV', 'VIDEO_GAMES', 'POP_CULTURE', 'PARTY_MIX'] },
+            difficulty: { enum: ['easy', 'medium', 'hard', 'mixed'] },
+            totalRounds: { enum: [5, 10] },
+            pin: { type: 'string' }
+          }
+        }
+      }
+    }, (req, reply) => {
+      const { category, difficulty, totalRounds } = req.body as AdminTriviaLobbyRequest;
+      return triviaReply(reply, queueManager.openTriviaLobby(category, difficulty, totalRounds));
+    });
+
+    admin.post('/trivia/start', async (_req, reply) => triviaReply(reply, await queueManager.startTriviaGame()));
+
+    admin.post('/trivia/stop', async (_req, reply) => triviaReply(reply, queueManager.stopTrivia()));
 
     admin.post('/fair-queue', {
       schema: {
