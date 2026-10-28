@@ -182,6 +182,10 @@ For a detailed vertical view, use `display: list`:
 
 </details>
 
+### Install as an app
+
+The guest remote is a PWA. Over the HTTPS `PUBLIC_REMOTE_URL` (the tunnel) guests can add it to their home screen, and it keeps working as a shell when the signal drops. On plain-HTTP LAN addresses browsers do not allow service workers, so install is unavailable there.
+
 ## Install the Android TV receiver
 
 The APK is a thin Capacitor 7 WebView that opens `http://<server-lan-ip>:3000/tv` directly. Using the

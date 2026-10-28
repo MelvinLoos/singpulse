@@ -40,7 +40,10 @@
   },
   "ignorePatterns": [
     "**/dist/**",
+    "**/dev-dist/**",
     "**/node_modules/**",
-    "packages/frontend/android/**"
+    "**/android/**",
+    "**/public/sw.js",
+    "**/public/workbox-*.js"
   ]
 }

@@ -9,7 +9,7 @@ import path from 'node:path';
 import { QueueManager } from './queueManager.ts';
 import { PolaroidStore } from './polaroidStore.ts';
 import type { PolaroidImageExt } from './polaroidStore.ts';
-import { cacheStats, searchYouTubeKaraoke } from './ytdlp.ts';
+import { cacheStats, lookupYouTubeVideo, searchYouTubeKaraoke } from './ytdlp.ts';
 import type { CacheStats } from './ytdlp.ts';
 import type {
   AdminFairQueueRequest,
@@ -255,9 +255,18 @@ await app.register(fastifyStatic, {
 });
 
 // 2. Serve Vue 3 SPA static files
+// The worker, its manifest and the shell must revalidate so a stale copy is never pinned
+// (by browsers or the Cloudflare edge); hashed assets never change and cache for good.
+const REVALIDATE_FILE = /(^|\/)(sw\.js|workbox-[^/]+\.js|manifest\.webmanifest|index\.html)$/;
 await app.register(fastifyStatic, {
   root: FRONTEND_DIST,
-  prefix: '/'
+  prefix: '/',
+  cacheControl: false,
+  setHeaders: (reply, filePath) => {
+    if (REVALIDATE_FILE.test(filePath)) reply.header('Cache-Control', 'no-cache');
+    else if (/[\\/]assets[\\/]/.test(filePath)) reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+    else reply.header('Cache-Control', 'public, max-age=86400');
+  }
 });
 
 // 3. WebSocket Endpoint
@@ -333,6 +342,27 @@ app.get('/api/stats', async (req, reply) => {
     uptime: Math.round(process.uptime())
   };
   return stats;
+});
+
+app.get('/api/video/:videoId', {
+  schema: {
+    params: {
+      type: 'object',
+      required: ['videoId'],
+      properties: { videoId: { type: 'string', pattern: '^[A-Za-z0-9_-]{11}$' } }
+    }
+  }
+}, async (req, reply) => {
+  if (!isAuthorizedRequest(req)) {
+    return reply.code(401).send({ error: 'Unauthorized' });
+  }
+  const { videoId } = req.params as { videoId: string };
+  try {
+    return await lookupYouTubeVideo(videoId);
+  } catch (err) {
+    req.log.error({ err }, 'yt-dlp lookup failed');
+    return reply.code(502).send({ error: 'Lookup unavailable' });
+  }
 });
 
 app.get('/api/search', {
@@ -592,7 +622,7 @@ app.setNotFoundHandler((req, reply) => {
     reply.code(404).send({ error: 'Not Found' });
     return;
   }
-  return reply.sendFile('index.html');
+  return reply.header('Cache-Control', 'no-cache').sendFile('index.html');
 });
 
 // Node runs as PID 1 in the container: handle stop signals explicitly so

@@ -16,8 +16,13 @@ import { compressPhoto } from '../lib/imageResize.ts';
 import { normaliseSingerName } from '../lib/singerName.ts';
 
 const ADMIN_PIN_KEY = 'singpulse_admin_pin';
+const PARTY_TOKEN_KEY = 'singpulse_party_token';
 const VOTER_ID_KEY = 'singpulse_voter_id';
 const WS_CLOSE_TOKEN_ROTATED = 4001;
+const RECONNECT_MIN_MS = 1000;
+const RECONNECT_MAX_MS = 15000;
+const PING_INTERVAL_MS = 15000;
+const WATCHDOG_MS = 4000;
 const POLAROID_BURST_MS = 8000;
 const MAX_LIVE_POLAROIDS = 3;
 
@@ -73,8 +78,39 @@ function writeStoredPin(pin: string | null): void {
   }
 }
 
+function readStoredToken(): string {
+  try {
+    return localStorage.getItem(PARTY_TOKEN_KEY) ?? '';
+  } catch {
+    return ''; // Private mode: the URL token still works for this session
+  }
+}
+
+function writeStoredToken(token: string): void {
+  try {
+    if (token) localStorage.setItem(PARTY_TOKEN_KEY, token);
+  } catch {
+    // In-memory state still works for this session
+  }
+}
+
+// Accepts a bare code or a pasted/scanned join URL; only ever extracts the token
+function parseTokenInput(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return '';
+  try {
+    const fromUrl = new URL(trimmed).searchParams.get('token');
+    if (fromUrl) return fromUrl.trim();
+  } catch {
+    // Not a URL: treat it as the code itself
+  }
+  return trimmed.replace(/\s+/g, '');
+}
+
 export const useKaraokeStore = defineStore('karaoke', () => {
-  const partyToken = ref<string>(new URLSearchParams(window.location.search).get('token') || '');
+  const urlToken = new URLSearchParams(window.location.search).get('token') || '';
+  if (urlToken) writeStoredToken(urlToken);
+  const partyToken = ref<string>(urlToken || readStoredToken());
   const remoteBaseUrl = ref<string>(window.location.origin);
   const currentSong = ref<QueueItem | null>(null);
   const queue = ref<QueueItem[]>([]);
@@ -83,6 +119,9 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   const fairQueueEnabled = ref<boolean>(true);
   // Set when the server drops us because the party token was rotated or is dead
   const tokenExpired = ref<boolean>(false);
+  // Set when a code typed into the rejoin panel was refused as well
+  const rejoinFailed = ref<boolean>(false);
+  const online = ref<boolean>(navigator.onLine);
   const adminPin = ref<string | null>(readStoredPin());
   const isAdmin = ref<boolean>(false);
   const activeVote = ref<VotingSessionState | null>(null);
@@ -98,6 +137,10 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   let ws: WebSocket | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempts = 0;
+  let rejoining = false;
+  let started = false;
   let role: 'tv' | 'guest' = 'guest';
   // True while this client's own rotation is in flight: its socket is dropped too
   let rotatingSelf = false;
@@ -109,6 +152,7 @@ export const useKaraokeStore = defineStore('karaoke', () => {
 
   function connect(nextRole: 'tv' | 'guest' = role) {
     role = nextRole;
+    started = true;
     if (tokenExpired.value) return;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
@@ -120,15 +164,20 @@ export const useKaraokeStore = defineStore('karaoke', () => {
 
     socket.addEventListener('open', () => {
       connected.value = true;
+      reconnectAttempts = 0;
       if (pingTimer) clearInterval(pingTimer);
       pingTimer = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: 'PING' }));
         }
-      }, 15000);
+      }, PING_INTERVAL_MS);
     });
 
     socket.addEventListener('message', (event) => {
+      if (ws === socket && watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
       let data: WsOutboundMessage;
       try {
         data = JSON.parse(event.data) as WsOutboundMessage;
@@ -137,6 +186,9 @@ export const useKaraokeStore = defineStore('karaoke', () => {
       }
       if (data.type === 'PONG') return;
       if (data.type === 'STATE_SYNC') {
+        // The server accepts the upgrade before it checks the token: only STATE_SYNC proves it
+        rejoining = false;
+        rejoinFailed.value = false;
         // Only the TV is told the live token; everyone else keeps what they hold
         if (data.partyToken) setPartyToken(data.partyToken);
         remoteBaseUrl.value = data.remoteBaseUrl;
@@ -159,11 +211,77 @@ export const useKaraokeStore = defineStore('karaoke', () => {
       if (pingTimer) clearInterval(pingTimer);
       if (event.code === WS_CLOSE_TOKEN_ROTATED) {
         // Dead token: stop retrying. Our own rotation reconnects with the fresh one.
-        if (!rotatingSelf) tokenExpired.value = true;
+        if (!rotatingSelf) {
+          tokenExpired.value = true;
+          if (rejoining) rejoinFailed.value = true;
+        }
+        rejoining = false;
         return;
       }
-      reconnectTimer = setTimeout(() => connect(), 2000);
+      scheduleReconnect();
     });
+  }
+
+  // Capped exponential backoff with jitter, reset once a socket opens
+  function scheduleReconnect() {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    const base = Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** reconnectAttempts);
+    reconnectAttempts += 1;
+    reconnectTimer = setTimeout(() => connect(), base * (0.75 + Math.random() * 0.5));
+  }
+
+  // Phones freeze sockets in the background: on resume, reconnect now or prove the link is alive
+  function checkLink() {
+    if (!started || tokenExpired.value) return;
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws = null;
+      connect();
+      return;
+    }
+    if (ws.readyState !== WebSocket.OPEN || watchdogTimer) return;
+    ws.send(JSON.stringify({ type: 'PING' }));
+    watchdogTimer = setTimeout(() => {
+      watchdogTimer = null;
+      // No reply: drop the stale socket before dialling, so no duplicate lingers
+      const stale = ws;
+      ws = null;
+      connected.value = false;
+      try {
+        stale?.close();
+      } catch {
+        // Already gone
+      }
+      connect();
+    }, WATCHDOG_MS);
+  }
+
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && checkLink());
+  window.addEventListener('pageshow', (event) => event.persisted && checkLink());
+  window.addEventListener('online', () => {
+    online.value = true;
+    checkLink();
+  });
+  window.addEventListener('offline', () => (online.value = false));
+
+  // Used by the rejoin panel after the token died; resolves nothing, state flows through refs
+  function rejoin(input: string) {
+    const token = parseTokenInput(input);
+    if (!token) return;
+    rejoinFailed.value = false;
+    rejoining = true;
+    setPartyToken(token);
+    tokenExpired.value = false;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectAttempts = 0;
+    const old = ws;
+    ws = null;
+    try {
+      old?.close();
+    } catch {
+      // Already gone
+    }
+    connect();
   }
 
   // A fresh photo floats over the video briefly; the wall keeps it permanently
@@ -179,6 +297,7 @@ export const useKaraokeStore = defineStore('karaoke', () => {
   // Keep a ?token= in the address bar in step so a reload rejoins with the live token
   function setPartyToken(token: string) {
     partyToken.value = token;
+    writeStoredToken(token);
     const url = new URL(window.location.href);
     if (url.searchParams.has('token') && url.searchParams.get('token') !== token) {
       url.searchParams.set('token', token);
@@ -249,6 +368,15 @@ export const useKaraokeStore = defineStore('karaoke', () => {
       signal
     });
     if (!res.ok) throw new Error('Search failed');
+    return res.json();
+  }
+
+  async function lookupVideo(videoId: string, signal?: AbortSignal): Promise<SearchResult> {
+    const res = await fetch(`/api/video/${encodeURIComponent(videoId)}`, {
+      headers: { 'x-party-token': partyToken.value },
+      signal
+    });
+    if (!res.ok) throw new Error('Video lookup failed');
     return res.json();
   }
 
@@ -363,6 +491,10 @@ export const useKaraokeStore = defineStore('karaoke', () => {
     partyToken,
     fairQueueEnabled,
     tokenExpired,
+    rejoinFailed,
+    online,
+    rejoin,
+    lookupVideo,
     adminPin,
     isAdmin,
     unlockAdmin,

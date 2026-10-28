@@ -106,3 +106,16 @@ fixes a real bug, a toolchain incompatibility or a stated requirement the refere
 | `POST /api/polaroid` (REST, 500 KB body limit) rather than a WS message | The WS `maxPayload` is 4096 bytes. Rate limit is 1 photo per 15 s per `clientKey`. |
 | Polaroids persist in `${CACHE_DIR}/polaroids` (`index.json` plus image files, newest 200 kept) and are served by the existing `/media/` mount; `DELETE /api/admin/polaroid/:id` removes one | Photos survive container restarts and feed the idle-screen wall. |
 | `--color-film-paper` (`#f4f1ea`) added to `@theme` | The requested film-border colour, kept as a token so raw hex stays out of components. |
+
+## PWA (installable guest remote)
+
+Not in the spec; additive. Nothing in §4 (shared contracts) changed.
+
+| Change | Why |
+| --- | --- |
+| `vite-plugin-pwa` 2.0.0, `workbox-window` 7.4.1 and `@vite-pwa/assets-generator` 2.0.0 (frontend dev deps); committed icons in `packages/frontend/public/` (`pnpm --filter @singpulse/frontend pwa:assets` regenerates them from `pwa/icon.svg`) | Manifest, auto-updating service worker and home-screen icons. Icons are committed so Docker and CI need no image tooling. No iOS splash images: iOS builds the launch screen from the touch icon and `background_color`. |
+| Service worker scope `/`, registered only from `/remote`; `/api`, `/media`, `/ws` and `/tv` are never served from its cache | The TV and the MP4 range requests must never be intercepted. It only registers in a secure context, so guests on the HTTPS tunnel get it and plain-HTTP LAN guests do not. |
+| `GET /api/video/:videoId` (returns the existing `SearchResult`) with an in-memory 100-entry cache | Share-to-queue: a YouTube link shared into the app resolves to a result row. Same auth as `/api/search`. |
+| `@fastify/static` for the SPA now sets `Cache-Control`: `no-cache` for `sw.js`, `workbox-*.js`, `manifest.webmanifest` and `index.html` (also on the SPA fallback), `immutable` for `/assets/*` | A stale worker or shell pinned by a browser or the Cloudflare edge would stop guests getting updates. |
+| The party token is also kept in `localStorage['singpulse_party_token']`; a rejected token shows a code-entry panel instead of a dead end | A home-screen launch has no `?token=`, and iOS home-screen apps do not share storage with Safari, so a rescan cannot help. |
+| WebSocket reconnect: capped exponential backoff (1 to 15 s) instead of a fixed 2 s, a liveness check on resume and a 4 s ping watchdog | Phones freeze sockets when the screen sleeps. |

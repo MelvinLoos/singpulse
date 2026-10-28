@@ -41,17 +41,54 @@ export async function searchYouTubeKaraoke(query: string): Promise<SearchResult[
     .trim()
     .split('\n')
     .filter(Boolean)
-    .map((line) => {
-      const data = JSON.parse(line);
-      return {
-        videoId: data.id,
-        title: data.title,
-        duration: data.duration || 0,
-        thumbnail: data.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${data.id}/hqdefault.jpg`,
-        channel: data.uploader || data.channel || 'YouTube'
-      };
-    })
+    .map((line) => toSearchResult(JSON.parse(line)))
     .filter((item) => validateVideoId(item.videoId));
+}
+
+interface YtDlpEntry {
+  id: string;
+  title?: string;
+  duration?: number;
+  thumbnails?: Array<{ url?: string }>;
+  uploader?: string;
+  channel?: string;
+}
+
+export function toSearchResult(data: YtDlpEntry): SearchResult {
+  return {
+    videoId: data.id,
+    title: data.title ?? '',
+    duration: data.duration || 0,
+    thumbnail: data.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${data.id}/hqdefault.jpg`,
+    channel: data.uploader || data.channel || 'YouTube'
+  };
+}
+
+const MAX_LOOKUP_CACHE = 100;
+const lookupCache = new Map<string, SearchResult>();
+
+/** Resolves one video by id (for shared YouTube links). Successful lookups are cached. */
+export async function lookupYouTubeVideo(videoId: string): Promise<SearchResult> {
+  if (!validateVideoId(videoId)) throw new Error('Invalid YouTube Video ID');
+  const cached = lookupCache.get(videoId);
+  if (cached) return cached;
+
+  const { stdout } = await execFileAsync('yt-dlp', [
+    '--dump-json',
+    '--skip-download',
+    '--no-playlist',
+    '--no-warnings',
+    `https://www.youtube.com/watch?v=${videoId}`
+  ], { timeout: 10000 });
+
+  const result = toSearchResult(JSON.parse(stdout.trim().split('\n')[0] ?? ''));
+  if (!validateVideoId(result.videoId)) throw new Error('Unexpected yt-dlp response');
+  if (lookupCache.size >= MAX_LOOKUP_CACHE) {
+    const oldest = lookupCache.keys().next().value;
+    if (oldest !== undefined) lookupCache.delete(oldest);
+  }
+  lookupCache.set(videoId, result);
+  return result;
 }
 
 export async function downloadKaraokeVideo(videoId: string, onProgress?: ProgressFn): Promise<string> {

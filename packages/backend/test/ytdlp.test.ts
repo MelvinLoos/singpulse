@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { downloadKaraokeVideo, searchYouTubeKaraoke, validateVideoId } from '../src/ytdlp.ts';
+import { downloadKaraokeVideo, lookupYouTubeVideo, searchYouTubeKaraoke, toSearchResult, validateVideoId } from '../src/ytdlp.ts';
 
 describe('validateVideoId', () => {
   it('accepts 11-character YouTube ids', () => {
@@ -24,5 +24,26 @@ describe('downloadKaraokeVideo', () => {
 describe('searchYouTubeKaraoke', () => {
   it('returns no results for queries that sanitize to nothing', async () => {
     assert.deepEqual(await searchYouTubeKaraoke('$%^&*()'), []);
+  });
+});
+
+describe('lookupYouTubeVideo', () => {
+  it('refuses invalid ids before spawning anything', async () => {
+    await assert.rejects(lookupYouTubeVideo('--exec=sh'), /Invalid YouTube Video ID/);
+  });
+});
+
+describe('toSearchResult', () => {
+  it('maps a yt-dlp entry and falls back for missing fields', () => {
+    assert.deepEqual(toSearchResult({ id: 'dQw4w9WgXcQ', title: 'T', duration: 90, uploader: 'U', thumbnails: [{ url: 'https://x/y.jpg' }] }), {
+      videoId: 'dQw4w9WgXcQ',
+      title: 'T',
+      duration: 90,
+      thumbnail: 'https://x/y.jpg',
+      channel: 'U'
+    });
+    const bare = toSearchResult({ id: 'dQw4w9WgXcQ' });
+    assert.equal(bare.channel, 'YouTube');
+    assert.equal(bare.thumbnail, 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg');
   });
 });

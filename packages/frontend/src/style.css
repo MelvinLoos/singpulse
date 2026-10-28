@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+@custom-variant short (@media (max-height: 30rem));
+@custom-variant standalone (@media (display-mode: standalone));
+
 @theme {
   --font-display: "Syne", "Space Grotesk", "Arial Narrow", "Helvetica Neue", sans-serif;
   --font-sans: "Plus Jakarta Sans", "Inter", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -106,6 +109,20 @@
   html.tv-mode {
     font-size: min(calc(100vw / 80), calc(100vh / 45));
     cursor: none;
+    overflow: hidden;
+  }
+
+  /* Remove the 300ms double-tap-zoom wait and the iOS long-press callout on controls */
+  a, button, summary, [role='button'], [role='switch'], label, select {
+    touch-action: manipulation;
+  }
+
+  button, img {
+    -webkit-touch-callout: none;
+  }
+
+  /* iOS keeps scrolling the page behind a modal sheet unless the root itself is locked */
+  html:has(dialog:modal[open]) {
     overflow: hidden;
   }
 

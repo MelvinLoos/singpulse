@@ -8,6 +8,7 @@ import {
   GripVertical,
   KeyRound,
   ListMusic,
+  Link2,
   Lock,
   MicVocal,
   Pause,
@@ -16,12 +17,12 @@ import {
   Plus,
   RotateCcw,
   RotateCw,
-  ScanLine,
   Search,
   ShieldCheck,
   SkipForward,
   Trash2,
   Undo2,
+  UserPen,
   X
 } from 'lucide-vue-next';
 import type { PlaybackCommand, QueueItem, SearchResult } from '@singpulse/shared/types';
@@ -32,13 +33,22 @@ import EqualizerBadge from '../components/EqualizerBadge.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import CrowdVoteSheet from '../components/CrowdVoteSheet.vue';
 import PolaroidCamera from '../components/PolaroidCamera.vue';
+import InstallCard from '../components/InstallCard.vue';
+import RejoinPanel from '../components/RejoinPanel.vue';
+import { usePwaUpdates } from '../lib/pwa.ts';
+import { useRoute, useRouter } from 'vue-router';
+import { consumeLaunchParams, hasLaunchParams, readLaunchParams, type LaunchParams } from '../lib/launchParams.ts';
+import { useSheetDrag } from '../lib/sheetDrag.ts';
 
 const SEARCH_DEBOUNCE_MS = 350;
 const UNDO_WINDOW_MS = 5000;
 const ICON_STROKE = 1.75;
 
 const store = useKaraokeStore();
+const route = useRoute();
+const router = useRouter();
 const { singerName, save: saveSingerName } = useSingerName();
+usePwaUpdates();
 
 // Screen-reader announcements for async outcomes
 const announcement = ref('');
@@ -69,6 +79,7 @@ function saveInlineName(): void {
 type SearchState = 'idle' | 'loading' | 'results' | 'empty' | 'error';
 
 const query = ref('');
+const searchInput = ref<HTMLInputElement | null>(null);
 const results = ref<SearchResult[]>([]);
 const searchState = ref<SearchState>('idle');
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -84,6 +95,7 @@ async function runSearch(term: string): Promise<void> {
     if (controller.signal.aborted) return;
     results.value = found;
     searchState.value = found.length ? 'results' : 'empty';
+    window.scrollTo({ top: 0 });
   } catch {
     if (controller.signal.aborted) return;
     searchState.value = 'error';
@@ -91,6 +103,7 @@ async function runSearch(term: string): Promise<void> {
 }
 
 function searchNow(): void {
+  searchInput.value?.blur();
   if (debounceTimer) clearTimeout(debounceTimer);
   const term = query.value.trim();
   if (term) void runSearch(term);
@@ -112,6 +125,51 @@ watch(query, (value) => {
   searchState.value = 'loading';
   debounceTimer = setTimeout(() => void runSearch(term), SEARCH_DEBOUNCE_MS);
 });
+
+/* ------------------------------------------------------------ shared link */
+// A YouTube link shared into the app (Android share target) is pinned above the karaoke search
+const sharedSong = ref<SearchResult | null>(null);
+const listedResults = computed(() =>
+  sharedSong.value ? [sharedSong.value, ...results.value.filter((song) => song.videoId !== sharedSong.value?.videoId)] : results.value
+);
+const showList = computed(() => searchState.value === 'results' || (sharedSong.value !== null && searchState.value !== 'loading'));
+
+async function openSharedLink(videoId: string, fallbackText: string): Promise<void> {
+  query.value = fallbackText;
+  try {
+    const song = await store.lookupVideo(videoId);
+    sharedSong.value = song;
+    query.value = cleanTitle(song.title);
+    announce(`Shared link found: ${cleanTitle(song.title)}`);
+  } catch {
+    // Lookup failed: the shared title (if the share sheet sent one) still drives a karaoke search
+    sharedSong.value = null;
+    if (fallbackText) announce(`Link lookup failed. Searching for ${fallbackText}`);
+    else announce('Could not read the shared link');
+  }
+}
+
+function applyLaunch(launch: LaunchParams): void {
+  if (launch.videoId) void openSharedLink(launch.videoId, launch.text);
+  else if (launch.text) query.value = launch.text;
+  if (launch.action === 'search') void nextTick(() => searchInput.value?.focus());
+  else if (launch.action === 'setlist') void nextTick(openQueueSheet);
+}
+
+// Warm launches (shortcut or share while the app is already open) may only change the query
+watch(
+  () => route.query,
+  (next) => {
+    if (!hasLaunchParams(next)) return;
+    applyLaunch(consumeLaunchParams());
+    const { action: _a, share_title: _t, share_text: _x, share_url: _u, ...rest } = next;
+    void router.replace({ query: rest });
+  }
+);
+
+type LaunchQueueWindow = Window & {
+  launchQueue?: { setConsumer: (cb: (params: { targetURL?: string }) => void) => void };
+};
 
 /* ---------------------------------------------------------------- queueing */
 type QueueRequestState = 'pending' | 'queued' | 'failed';
@@ -310,10 +368,17 @@ async function vetoItem(item: QueueItem): Promise<void> {
   }
 }
 
+// Host row actions live in a 44px key strip under the tapped row
+const expandedId = ref<string | null>(null);
+function toggleExpanded(id: string): void {
+  expandedId.value = expandedId.value === id ? null : id;
+}
+
 const editingSingerId = ref<string | null>(null);
 const singerDraft = ref('');
 
 function startSingerEdit(item: QueueItem): void {
+  expandedId.value = null;
   editingSingerId.value = item.id;
   singerDraft.value = item.singer;
   void nextTick(() => document.getElementById('singer-edit')?.focus());
@@ -427,6 +492,9 @@ const polaroidCamera = ref<InstanceType<typeof PolaroidCamera> | null>(null);
 const queueSheet = ref<HTMLDialogElement | null>(null);
 const nameSheet = ref<HTMLDialogElement | null>(null);
 const sheetOpen = ref(false);
+const queueDrag = useSheetDrag(queueSheet);
+const nameDrag = useSheetDrag(nameSheet);
+const pinDrag = useSheetDrag(pinSheet);
 const nameSheetDraft = ref('');
 
 const supportsClosedBy = typeof HTMLDialogElement !== 'undefined' && 'closedBy' in HTMLDialogElement.prototype;
@@ -465,8 +533,64 @@ function submitNameSheet(): void {
 }
 
 /* --------------------------------------------------------------- lifecycle */
+const deckEl = ref<HTMLElement | null>(null);
+const deckHeight = ref(0);
+const keyboardUp = ref(false);
+let deckObserver: ResizeObserver | null = null;
+let focusedAt = 0;
+let focusScrollY = 0;
+
+function isTextField(el: EventTarget | null): el is HTMLInputElement {
+  return el instanceof HTMLInputElement && !['button', 'submit', 'checkbox', 'radio', 'file'].includes(el.type);
+}
+
+function syncKeyboard(): void {
+  const vv = window.visualViewport;
+  const typing = isTextField(document.activeElement);
+  keyboardUp.value = typing && vv !== null && vv.height < window.innerHeight * 0.75;
+}
+
+function onFocusIn(event: FocusEvent): void {
+  if (event.target === searchInput.value) {
+    focusedAt = performance.now();
+    focusScrollY = window.scrollY;
+  }
+  syncKeyboard();
+}
+
+// Blur on a real scroll, never on touchstart: a mid-tap viewport shift would eat QUEUE clicks.
+// iOS scrolls the field into view on focus, so ignore the first 400ms and small drifts.
+function onScrollBlur(): void {
+  const input = searchInput.value;
+  if (!input || document.activeElement !== input) return;
+  if (performance.now() - focusedAt < 400 || Math.abs(window.scrollY - focusScrollY) < 24) return;
+  input.blur();
+}
+
 onMounted(() => {
   store.connect();
+  if (deckEl.value) {
+    deckObserver = new ResizeObserver(([entry]) => {
+      deckHeight.value = Math.ceil(entry?.borderBoxSize?.[0]?.blockSize ?? deckEl.value?.offsetHeight ?? 0);
+    });
+    deckObserver.observe(deckEl.value);
+  }
+  document.addEventListener('focusin', onFocusIn);
+  document.addEventListener('focusout', syncKeyboard);
+  window.visualViewport?.addEventListener('resize', syncKeyboard);
+  window.addEventListener('scroll', onScrollBlur, { passive: true });
+
+  applyLaunch(consumeLaunchParams());
+  // Chromium hands warm launches to the open window here instead of reloading it
+  (window as LaunchQueueWindow).launchQueue?.setConsumer(({ targetURL }) => {
+    if (!targetURL) return;
+    try {
+      const url = new URL(targetURL);
+      if (url.origin === window.location.origin) applyLaunch(readLaunchParams(url));
+    } catch {
+      // Malformed target: ignore
+    }
+  });
   void store.restoreAdmin();
   window.addEventListener('pagehide', flushRemovals);
   // First run: surface the name field without focusing it (no surprise keyboard)
@@ -477,6 +601,11 @@ onUnmounted(() => {
   if (debounceTimer) clearTimeout(debounceTimer);
   searchController?.abort();
   window.removeEventListener('pagehide', flushRemovals);
+  deckObserver?.disconnect();
+  document.removeEventListener('focusin', onFocusIn);
+  document.removeEventListener('focusout', syncKeyboard);
+  window.visualViewport?.removeEventListener('resize', syncKeyboard);
+  window.removeEventListener('scroll', onScrollBlur);
   if (rotateArmTimer) clearTimeout(rotateArmTimer);
   if (rotatedToTimer) clearTimeout(rotatedToTimer);
   flushRemovals();
@@ -486,24 +615,29 @@ const skeletonRows = 6;
 </script>
 
 <template>
-  <div class="flex min-h-dvh flex-col bg-obsidian text-white">
-    <!-- TOP BAR: brand, link state, identity, search -->
-    <header class="sticky top-0 z-10 border-b border-white/12 bg-obsidian px-safe pt-safe pb-3">
-      <div class="flex items-center justify-between gap-3">
+  <div class="flex min-h-dvh flex-col bg-obsidian text-white" :style="{ '--deck-h': deckHeight ? `${deckHeight}px` : '10.5rem' }">
+    <!-- Covers the status-bar inset while the search is pinned (standalone, translucent bar) -->
+    <div class="fixed inset-x-0 top-0 z-20 h-[env(safe-area-inset-top)] bg-obsidian" aria-hidden="true" />
+
+    <!-- TOP BAR: brand, link state, identity (scrolls away; only the search stays pinned) -->
+    <header class="px-safe pt-safe">
+      <div class="flex flex-wrap items-center justify-between gap-x-3">
         <p class="flex items-baseline gap-2">
           <span class="font-display text-xl leading-none font-extrabold tracking-tighter uppercase">
             Sing<span class="text-acid-lime">Pulse</span>
           </span>
-          <span class="font-mono text-[11px] tracking-widest whitespace-nowrap text-white/70 uppercase max-[380px]:hidden">// Remote</span>
+          <span class="font-mono text-[11px] tracking-widest whitespace-nowrap text-white/70 uppercase max-[430px]:hidden">// Remote</span>
         </p>
-        <div class="-my-2 flex shrink-0 items-center gap-1">
+        <div class="-my-2 ml-auto flex shrink-0 items-center gap-1">
           <p class="flex items-center gap-1.5 font-mono text-[11px] tracking-widest whitespace-nowrap uppercase" role="status">
             <span
               class="size-1.5 rounded-full"
-              :class="store.connected ? 'bg-acid-lime' : 'bg-vinyl-amber motion-safe:animate-shimmer'"
+              :class="store.connected && store.online ? 'bg-acid-lime' : 'bg-vinyl-amber motion-safe:animate-shimmer'"
               aria-hidden="true"
             />
-            <span :class="store.connected ? 'text-white/70' : 'text-vinyl-amber'">{{ store.connected ? 'LINK OK' : 'RECONNECTING' }}</span>
+            <span :class="store.connected && store.online ? 'text-white/70 max-[380px]:sr-only' : 'text-vinyl-amber'">{{
+              !store.online ? 'OFFLINE' : store.connected ? 'LINK OK' : 'RECONNECTING'
+            }}</span>
           </p>
           <PolaroidCamera ref="polaroidCamera" @announce="announce" />
           <button
@@ -578,7 +712,10 @@ const skeletonRows = 6;
         </form>
       </div>
 
-      <form role="search" class="relative mt-2" @submit.prevent="searchNow">
+    </header>
+
+    <form role="search" class="sticky top-0 z-10 border-b border-white/12 bg-obsidian px-safe pt-2 pb-3" @submit.prevent="searchNow">
+      <div class="relative">
         <label for="song-search" class="sr-only">Search songs</label>
         <Search
           class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-white/70"
@@ -587,6 +724,7 @@ const skeletonRows = 6;
         />
         <input
           id="song-search"
+          ref="searchInput"
           v-model="query"
           type="search"
           inputmode="search"
@@ -606,39 +744,13 @@ const skeletonRows = 6;
         >
           <X class="size-4" :stroke-width="ICON_STROKE" />
         </button>
-      </form>
-    </header>
+      </div>
+    </form>
 
     <!-- RESULTS -->
-    <main class="flex-1 px-safe pb-[calc(10.5rem+env(safe-area-inset-bottom))]">
-      <section v-if="searchState === 'idle'" class="pt-8" aria-label="Get started">
-        <p class="font-mono text-[11px] tracking-widest text-white/70 uppercase">Ready when you are</p>
-        <h1 class="mt-2 font-display text-4xl leading-[0.9] font-extrabold tracking-tighter uppercase">
-          Find your<br /><span class="text-acid-lime">song</span>
-        </h1>
-        <ul class="mt-6 space-y-2.5 border-t border-white/12 pt-4 font-mono text-[11px] tracking-widest text-white/70 uppercase">
-          <li class="flex gap-3"><span class="text-acid-lime">01</span>Search artist + title</li>
-          <li class="flex gap-3"><span class="text-acid-lime">02</span>Tap queue. We add “karaoke” for you</li>
-          <li class="flex gap-3"><span class="text-acid-lime">03</span>Fair rotation: everyone gets a turn</li>
-        </ul>
-        <p v-if="mySlot >= 0" class="mt-6 rounded-module border border-acid-lime/40 px-3 py-2.5 font-mono text-[11px] tracking-widest text-acid-lime uppercase">
-          Your next slot // {{ formatIndex(mySlot) }}
-        </p>
-      </section>
-
-      <ul v-else-if="searchState === 'loading'" class="pt-2" aria-label="Searching" aria-busy="true">
-        <li v-for="n in skeletonRows" :key="n" class="flex items-center gap-3 border-b border-white/12 py-3">
-          <span class="aspect-video w-24 shrink-0 rounded-module bg-surface-elevated motion-safe:animate-shimmer" />
-          <span class="flex flex-1 flex-col gap-2">
-            <span class="h-3 w-11/12 rounded-[1px] bg-surface-elevated motion-safe:animate-shimmer" />
-            <span class="h-3 w-2/3 rounded-[1px] bg-surface-elevated motion-safe:animate-shimmer" />
-            <span class="h-2 w-1/3 rounded-[1px] bg-surface-elevated motion-safe:animate-shimmer" />
-          </span>
-        </li>
-      </ul>
-
-      <ul v-else-if="searchState === 'results'" class="pt-1" aria-label="Search results">
-        <li v-for="song in results" :key="song.videoId" class="flex items-center gap-3 border-b border-white/12 py-3">
+    <main class="flex-1 px-safe pb-[calc(var(--deck-h)+1rem)]">
+      <ul v-if="showList" class="pt-1" aria-label="Search results">
+        <li v-for="song in listedResults" :key="song.videoId" class="flex items-center gap-3 border-b border-white/12 py-3">
           <img
             :src="song.thumbnail"
             alt=""
@@ -648,6 +760,9 @@ const skeletonRows = 6;
             class="aspect-video w-24 shrink-0 rounded-module bg-surface-elevated object-cover"
           />
           <div class="min-w-0 flex-1">
+            <p v-if="song.videoId === sharedSong?.videoId" class="mb-0.5 flex items-center gap-1 font-mono text-[10px] tracking-widest text-acid-lime uppercase">
+              <Link2 class="size-3" :stroke-width="ICON_STROKE" aria-hidden="true" /> Shared link
+            </p>
             <p class="line-clamp-2 text-sm leading-snug font-semibold">{{ cleanTitle(song.title) }}</p>
             <p class="mt-1 flex gap-2 font-mono text-[11px] tracking-widest text-white/70 uppercase">
               <span class="tabular-nums">{{ formatDuration(song.duration) }}</span>
@@ -683,6 +798,33 @@ const skeletonRows = 6;
         </li>
       </ul>
 
+      <section v-else-if="searchState === 'idle'" class="pt-8" aria-label="Get started">
+        <p class="font-mono text-[11px] tracking-widest text-white/70 uppercase">Ready when you are</p>
+        <h1 class="mt-2 font-display text-4xl leading-[0.9] short:text-3xl font-extrabold tracking-tighter uppercase">
+          Find your<br /><span class="text-acid-lime">song</span>
+        </h1>
+        <ul class="mt-6 space-y-2.5 border-t border-white/12 pt-4 font-mono text-[11px] tracking-widest text-white/70 uppercase">
+          <li class="flex gap-3"><span class="text-acid-lime">01</span>Search artist + title</li>
+          <li class="flex gap-3"><span class="text-acid-lime">02</span>Tap queue. We add “karaoke” for you</li>
+          <li class="flex gap-3"><span class="text-acid-lime">03</span>Fair rotation: everyone gets a turn</li>
+        </ul>
+        <InstallCard />
+        <p v-if="mySlot >= 0" class="mt-6 rounded-module border border-acid-lime/40 px-3 py-2.5 font-mono text-[11px] tracking-widest text-acid-lime uppercase">
+          Your next slot // {{ formatIndex(mySlot) }}
+        </p>
+      </section>
+
+      <ul v-else-if="searchState === 'loading'" class="pt-2" aria-label="Searching" aria-busy="true">
+        <li v-for="n in skeletonRows" :key="n" class="flex items-center gap-3 border-b border-white/12 py-3">
+          <span class="aspect-video w-24 shrink-0 rounded-module bg-surface-elevated motion-safe:animate-shimmer" />
+          <span class="flex flex-1 flex-col gap-2">
+            <span class="h-3 w-11/12 rounded-[1px] bg-surface-elevated motion-safe:animate-shimmer" />
+            <span class="h-3 w-2/3 rounded-[1px] bg-surface-elevated motion-safe:animate-shimmer" />
+            <span class="h-2 w-1/3 rounded-[1px] bg-surface-elevated motion-safe:animate-shimmer" />
+          </span>
+        </li>
+      </ul>
+
       <section v-else-if="searchState === 'empty'" class="pt-10 text-center">
         <Disc3 class="mx-auto size-8 text-white/30" :stroke-width="1.5" aria-hidden="true" />
         <p class="mt-4 font-mono text-xs tracking-widest text-white/70 uppercase">No matches — try artist + title</p>
@@ -703,7 +845,7 @@ const skeletonRows = 6;
     <!-- UNDO TOAST (sheet closed) -->
     <div
       v-if="undoItem && !sheetOpen"
-      class="fixed inset-x-0 bottom-[calc(9.75rem+env(safe-area-inset-bottom))] z-20 px-safe"
+      class="fixed inset-x-0 bottom-[calc(var(--deck-h)+0.5rem)] z-20 px-safe"
     >
       <div class="flex items-center gap-3 rounded-module border border-white/12 bg-surface-elevated py-1 pl-3">
         <p class="min-w-0 flex-1 truncate font-mono text-[11px] tracking-widest text-white/80 uppercase">
@@ -716,8 +858,12 @@ const skeletonRows = 6;
     </div>
 
     <!-- STICKY TRANSPORT DECK -->
-    <footer class="fixed inset-x-0 bottom-0 z-10 border-t border-white/12 bg-surface px-safe pt-3 pb-safe">
-      <div class="flex items-center gap-3">
+    <footer
+      ref="deckEl"
+      class="fixed inset-x-0 bottom-0 z-10 border-t border-white/12 bg-surface px-safe pt-3 pb-safe transition-transform duration-200 motion-reduce:transition-none short:flex short:items-center short:gap-3 short:pt-2"
+      :class="keyboardUp ? 'translate-y-full' : ''"
+    >
+      <div class="flex items-center gap-3 short:min-w-0 short:flex-1">
         <span class="grid size-10 shrink-0 place-items-center rounded-module border border-white/12 bg-obsidian text-base">
           <EqualizerBadge v-if="hasSong" :active="!store.isPaused" />
           <Disc3 v-else class="size-4 text-white/50" :stroke-width="ICON_STROKE" aria-hidden="true" />
@@ -732,7 +878,7 @@ const skeletonRows = 6;
         </div>
       </div>
 
-      <div class="mt-3 grid grid-cols-[1fr_1fr_1fr_1.35fr] gap-2" role="group" aria-label="Playback controls">
+      <div class="mt-3 grid grid-cols-[1fr_1fr_1fr_1.35fr] gap-2 short:mt-0 short:w-[26rem] short:shrink-0" role="group" aria-label="Playback controls">
         <button
           type="button"
           class="grid h-13 place-items-center rounded-key border border-white/12 bg-surface-elevated text-white active:translate-y-px active:bg-obsidian disabled:opacity-35"
@@ -780,13 +926,15 @@ const skeletonRows = 6;
       ref="queueSheet"
       closedby="any"
       aria-labelledby="queue-sheet-title"
-      class="fixed inset-x-0 top-auto bottom-0 m-0 max-h-[85dvh] w-full max-w-none translate-y-0 overflow-y-auto rounded-t-[6px] border-t border-white/12 bg-surface p-0 text-white transition-transform duration-300 ease-out motion-reduce:transition-none starting:open:translate-y-full"
+      class="fixed inset-x-0 top-auto bottom-0 m-0 max-h-[85dvh] w-full max-w-none translate-y-0 overflow-y-auto short:max-h-[92dvh] rounded-t-[6px] border-t border-white/12 bg-surface p-0 text-white transition-transform duration-300 ease-out motion-reduce:transition-none starting:open:translate-y-full"
       @close="sheetOpen = false"
       @click="onSheetClick"
     >
       <div class="sticky top-0 z-10 border-b border-white/12 bg-surface px-safe pt-2 pb-3">
-        <div class="mx-auto h-1 w-10 rounded-full bg-white/25" aria-hidden="true" />
-        <div class="mt-3 flex items-center justify-between gap-3">
+        <div class="-mt-2 flex h-6 touch-none items-center" v-bind="queueDrag.dragHandlers" aria-hidden="true">
+          <div class="mx-auto h-1 w-10 rounded-full bg-white/25" />
+        </div>
+        <div class="mt-1 flex items-center justify-between gap-3">
           <div>
             <h2 id="queue-sheet-title" class="font-display text-2xl leading-none font-extrabold tracking-tighter uppercase">Setlist</h2>
             <p class="mt-1 font-mono text-[11px] tracking-widest text-white/70 uppercase">
@@ -881,7 +1029,7 @@ const skeletonRows = 6;
             v-for="(item, index) in displayQueue"
             :key="item.id"
             :ref="(el) => setRowEl(item.id, el)"
-            class="flex items-center gap-3 border-b border-white/12 bg-surface py-3"
+            class="flex flex-wrap items-center gap-3 border-b border-white/12 bg-surface py-3"
             :class="[
               store.isAdmin ? 'gap-2' : '',
               drag && drag.id !== item.id ? 'motion-safe:transition-transform motion-safe:duration-150' : '',
@@ -903,26 +1051,6 @@ const skeletonRows = 6;
             >
               <GripVertical class="size-5" :stroke-width="ICON_STROKE" />
             </button>
-            <div v-if="store.isAdmin" class="flex shrink-0 flex-col">
-              <button
-                type="button"
-                class="grid h-5 w-8 place-items-center rounded-key text-white/70 active:bg-surface-elevated disabled:opacity-30"
-                :disabled="index === 0"
-                :aria-label="`Move ${cleanTitle(item.title)} up`"
-                @click="commitReorder(index, index - 1)"
-              >
-                <ChevronUp class="size-4" :stroke-width="ICON_STROKE" />
-              </button>
-              <button
-                type="button"
-                class="grid h-5 w-8 place-items-center rounded-key text-white/70 active:bg-surface-elevated disabled:opacity-30"
-                :disabled="index === displayQueue.length - 1"
-                :aria-label="`Move ${cleanTitle(item.title)} down`"
-                @click="commitReorder(index, index + 1)"
-              >
-                <ChevronDown class="size-4" :stroke-width="ICON_STROKE" />
-              </button>
-            </div>
             <span class="w-6 shrink-0 font-mono text-xs text-white/70 tabular-nums">{{ formatIndex(index) }}</span>
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-semibold">{{ cleanTitle(item.title) }}</p>
@@ -946,17 +1074,7 @@ const skeletonRows = 6;
                 </button>
               </form>
               <p v-else class="mt-0.5 flex items-center gap-2">
-                <button
-                  v-if="store.isAdmin"
-                  type="button"
-                  class="-my-2.5 flex min-h-11 min-w-0 items-center gap-1.5 font-mono text-[11px] tracking-widest text-acid-lime uppercase"
-                  :aria-label="`Rename singer ${item.singer}`"
-                  @click="startSingerEdit(item)"
-                >
-                  <span class="truncate">{{ item.singer }}</span>
-                  <Pencil class="size-3 shrink-0" :stroke-width="ICON_STROKE" aria-hidden="true" />
-                </button>
-                <span v-else class="truncate font-mono text-[11px] tracking-widest text-acid-lime uppercase">{{ item.singer }}</span>
+                <span class="truncate font-mono text-[11px] tracking-widest text-acid-lime uppercase">{{ item.singer }}</span>
                 <StatusBadge :item="item" />
               </p>
               <p v-if="item.status === 'error' && item.errorMessage" class="mt-1 truncate font-mono text-[10px] tracking-wider text-neon-coral uppercase">
@@ -966,11 +1084,14 @@ const skeletonRows = 6;
             <button
               v-if="store.isAdmin"
               type="button"
-              class="ml-1 grid size-11 shrink-0 place-items-center rounded-key border border-neon-coral/60 text-neon-coral active:translate-y-px active:bg-neon-coral active:text-obsidian"
-              :aria-label="`Veto ${cleanTitle(item.title)}`"
-              @click="vetoItem(item)"
+              class="ml-1 grid size-11 shrink-0 place-items-center rounded-key border text-white/80 active:translate-y-px active:bg-surface-elevated"
+              :class="expandedId === item.id ? 'border-acid-lime text-acid-lime' : 'border-white/12'"
+              :aria-label="`Actions for ${cleanTitle(item.title)}`"
+              :aria-expanded="expandedId === item.id"
+              @click="toggleExpanded(item.id)"
             >
-              <Trash2 class="size-4" :stroke-width="ICON_STROKE" />
+              <ChevronUp v-if="expandedId === item.id" class="size-4" :stroke-width="ICON_STROKE" />
+              <ChevronDown v-else class="size-4" :stroke-width="ICON_STROKE" />
             </button>
             <button
               v-else
@@ -981,6 +1102,25 @@ const skeletonRows = 6;
             >
               <Trash2 class="size-4" :stroke-width="ICON_STROKE" />
             </button>
+            <div
+              v-if="store.isAdmin && expandedId === item.id"
+              class="grid basis-full grid-cols-4 gap-2 pb-1 font-mono text-[10px] font-bold tracking-widest uppercase"
+              role="group"
+              :aria-label="`Host actions for ${cleanTitle(item.title)}`"
+            >
+              <button type="button" class="flex h-11 items-center justify-center gap-1 rounded-key border border-white/12 bg-surface-elevated active:translate-y-px disabled:opacity-30" :disabled="index === 0" @click="commitReorder(index, index - 1)">
+                <ChevronUp class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" /> Up
+              </button>
+              <button type="button" class="flex h-11 items-center justify-center gap-1 rounded-key border border-white/12 bg-surface-elevated active:translate-y-px disabled:opacity-30" :disabled="index === displayQueue.length - 1" @click="commitReorder(index, index + 1)">
+                <ChevronDown class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" /> Down
+              </button>
+              <button type="button" class="flex h-11 items-center justify-center gap-1 rounded-key border border-white/12 bg-surface-elevated active:translate-y-px" :aria-label="`Rename singer ${item.singer}`" @click="startSingerEdit(item)">
+                <UserPen class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" /> Name
+              </button>
+              <button type="button" class="flex h-11 items-center justify-center gap-1 rounded-key border border-neon-coral/60 text-neon-coral active:translate-y-px active:bg-neon-coral active:text-obsidian" @click="vetoItem(item)">
+                <Trash2 class="size-4" :stroke-width="ICON_STROKE" aria-hidden="true" /> Veto
+              </button>
+            </div>
           </li>
         </ol>
         <p v-else class="py-10 text-center font-mono text-xs tracking-widest text-white/70 uppercase">
@@ -1007,7 +1147,10 @@ const skeletonRows = 6;
       @close="onNameSheetClose"
       @click="onSheetClick"
     >
-      <form class="px-safe pt-5 pb-safe" @submit.prevent="submitNameSheet">
+      <div class="mx-4 flex h-8 touch-none items-center" v-bind="nameDrag.dragHandlers" aria-hidden="true">
+        <div class="mx-auto h-1 w-10 rounded-full bg-white/25" />
+      </div>
+      <form class="px-safe pb-safe" @submit.prevent="submitNameSheet">
         <p class="font-mono text-[11px] tracking-widest text-white/70 uppercase">Before you queue</p>
         <h2 id="name-sheet-title" class="mt-1 font-display text-3xl leading-none font-extrabold tracking-tighter uppercase">
           Your stage <span class="text-acid-lime">name</span>
@@ -1051,7 +1194,10 @@ const skeletonRows = 6;
       class="fixed inset-x-0 top-auto bottom-0 m-0 w-full max-w-none rounded-t-[6px] border-t border-white/12 bg-surface p-0 text-white transition-transform duration-300 ease-out motion-reduce:transition-none starting:open:translate-y-full"
       @click="onSheetClick"
     >
-      <form class="px-safe pt-5 pb-safe" @submit.prevent="submitPin">
+      <div class="mx-4 flex h-8 touch-none items-center" v-bind="pinDrag.dragHandlers" aria-hidden="true">
+        <div class="mx-auto h-1 w-10 rounded-full bg-white/25" />
+      </div>
+      <form class="px-safe pb-safe" @submit.prevent="submitPin">
         <p class="font-mono text-[11px] tracking-widest text-white/70 uppercase">Restricted // Host only</p>
         <h2 id="pin-sheet-title" class="mt-1 font-display text-3xl leading-none font-extrabold tracking-tighter uppercase">
           Host <span class="text-acid-lime">PIN</span>
@@ -1091,22 +1237,8 @@ const skeletonRows = 6;
       </form>
     </dialog>
 
-    <!-- SESSION RESET: the party token was rotated (or is dead); retrying cannot help -->
-    <div
-      v-if="store.tokenExpired"
-      class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-obsidian px-safe text-center"
-      role="alertdialog"
-      aria-labelledby="reset-title"
-    >
-      <ScanLine class="size-12 text-neon-coral" :stroke-width="1.5" aria-hidden="true" />
-      <p class="mt-6 font-mono text-[11px] tracking-widest text-neon-coral uppercase">Link closed // Code rotated</p>
-      <h2 id="reset-title" class="mt-2 font-display text-4xl leading-[0.9] font-extrabold tracking-tighter uppercase">
-        Session <span class="text-acid-lime">reset</span>
-      </h2>
-      <p class="mt-4 max-w-xs font-mono text-xs leading-relaxed tracking-widest text-white/70 uppercase">
-        Scan the TV QR code to rejoin
-      </p>
-    </div>
+    <!-- SESSION RESET: the party token was rotated (or is dead); the code from the TV rejoins -->
+    <RejoinPanel v-if="store.tokenExpired" />
 
     <!-- POST-SONG CROWD VOTE -->
     <CrowdVoteSheet v-if="store.activeVote" :key="store.activeVote.songId" :vote="store.activeVote" />

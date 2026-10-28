@@ -3,6 +3,7 @@ import { computed, nextTick, onUnmounted, ref } from 'vue';
 import { Camera, ImageUp, RefreshCw, RotateCcw, Send, Trash2, X } from 'lucide-vue-next';
 import { PolaroidCooldownError, useKaraokeStore } from '../stores/karaoke.ts';
 import { useSingerName } from '../lib/singerName.ts';
+import { useSheetDrag } from '../lib/sheetDrag.ts';
 
 const COOLDOWN_S = 15;
 const MAX_CAPTION = 24;
@@ -17,6 +18,7 @@ type Step = 'live' | 'review';
 
 const cameraDialog = ref<HTMLDialogElement | null>(null);
 const wallDialog = ref<HTMLDialogElement | null>(null);
+const wallDrag = useSheetDrag(wallDialog);
 const videoEl = ref<HTMLVideoElement | null>(null);
 const fallbackInput = ref<HTMLInputElement | null>(null);
 
@@ -394,11 +396,13 @@ defineExpose({ openWall });
     ref="wallDialog"
     closedby="any"
     aria-labelledby="wall-title"
-    class="fixed inset-x-0 top-auto bottom-0 m-0 max-h-[85dvh] w-full max-w-none translate-y-0 overflow-y-auto rounded-t-[6px] border-t border-white/12 bg-surface p-0 text-white transition-transform duration-300 ease-out motion-reduce:transition-none starting:open:translate-y-full"
+    class="fixed inset-x-0 top-auto bottom-0 m-0 max-h-[85dvh] w-full max-w-none translate-y-0 overflow-y-auto short:max-h-[92dvh] rounded-t-[6px] border-t border-white/12 bg-surface p-0 text-white transition-transform duration-300 ease-out motion-reduce:transition-none starting:open:translate-y-full"
   >
     <div class="px-safe pt-2 pb-safe">
-      <div class="mx-auto h-1 w-10 rounded-full bg-white/25" aria-hidden="true" />
-      <div class="mt-3 flex items-center justify-between gap-3">
+      <div class="-mt-2 flex h-6 touch-none items-center" v-bind="wallDrag.dragHandlers" aria-hidden="true">
+        <div class="mx-auto h-1 w-10 rounded-full bg-white/25" />
+      </div>
+      <div class="mt-1 flex items-center justify-between gap-3">
         <div>
           <h2 id="wall-title" class="font-display text-2xl leading-none font-extrabold tracking-tighter uppercase">Photo wall</h2>
           <p class="mt-1 font-mono text-[11px] tracking-widest text-white/70 uppercase">
